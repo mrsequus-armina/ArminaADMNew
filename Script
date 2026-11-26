@@ -1,22 +1,23 @@
--- Adopt Me House Interior Cloner (Fixed Scan + Clean UI)
--- Features: Deep interior scan, Ghost Preview (client-only, free), Real Place, TP to player houses
--- Paste into your executor while inside the target house
+-- Adopt Me House Interior Cloner v2 (Fixed Scan + Info)
+-- Deep interior scan • Ghost Preview • Cost & House Type display • TP
 
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local HttpService = game:GetService("HttpService")
-local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 
 local LocalPlayer = Players.LocalPlayer
-local Mouse = LocalPlayer:GetMouse()
 
 -- ===================== STATE =====================
-local ScannedLayout = {}          -- {relativeCFrame, size, color, material, transparency, name, class}
-local HouseOrigin = nil
+local ScannedLayout = {}
+local HouseOrigin = CFrame.new()
+local HouseName = "Unknown"
 local GhostFolder = nil
 local isScanning = false
-local isPlacing = false
+local estimatedCost = 0
+
+-- Average furniture price used for rough cost estimate (real prices vary a lot)
+local AVG_FURNITURE_PRICE = 85
 
 -- ===================== UI =====================
 local ScreenGui = Instance.new("ScreenGui")
@@ -26,22 +27,19 @@ ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
 local Main = Instance.new("Frame")
-Main.Name = "Main"
-Main.Size = UDim2.new(0, 340, 0, 420)
-Main.Position = UDim2.new(0.5, -170, 0.5, -210)
-Main.BackgroundColor3 = Color3.fromRGB(22, 22, 28)
+Main.Size = UDim2.new(0, 360, 0, 480)
+Main.Position = UDim2.new(0.5, -180, 0.5, -240)
+Main.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
 Main.BorderSizePixel = 0
 Main.Active = true
 Main.Draggable = true
 Main.Parent = ScreenGui
 
-local Corner = Instance.new("UICorner")
-Corner.CornerRadius = UDim.new(0, 12)
-Corner.Parent = Main
+Instance.new("UICorner", Main).CornerRadius = UDim.new(0, 14)
 
 local Title = Instance.new("TextLabel")
-Title.Size = UDim2.new(1, -20, 0, 36)
-Title.Position = UDim2.new(0, 10, 0, 8)
+Title.Size = UDim2.new(1, -20, 0, 34)
+Title.Position = UDim2.new(0, 12, 0, 10)
 Title.BackgroundTransparency = 1
 Title.Text = "House Cloner • Interior"
 Title.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -52,131 +50,174 @@ Title.Parent = Main
 
 local Status = Instance.new("TextLabel")
 Status.Name = "Status"
-Status.Size = UDim2.new(1, -20, 0, 22)
-Status.Position = UDim2.new(0, 10, 0, 44)
+Status.Size = UDim2.new(1, -24, 0, 40)
+Status.Position = UDim2.new(0, 12, 0, 46)
 Status.BackgroundTransparency = 1
-Status.Text = "Ready • Stand inside the house and press Scan"
-Status.TextColor3 = Color3.fromRGB(160, 160, 170)
+Status.Text = "Stand inside the house → press Scan"
+Status.TextColor3 = Color3.fromRGB(170, 170, 180)
 Status.TextSize = 13
 Status.Font = Enum.Font.Gotham
 Status.TextXAlignment = Enum.TextXAlignment.Left
+Status.TextYAlignment = Enum.TextYAlignment.Top
+Status.TextWrapped = true
 Status.Parent = Main
+
+local InfoLabel = Instance.new("TextLabel")
+InfoLabel.Name = "Info"
+InfoLabel.Size = UDim2.new(1, -24, 0, 60)
+InfoLabel.Position = UDim2.new(0, 12, 0, 92)
+InfoLabel.BackgroundTransparency = 1
+InfoLabel.Text = "Furniture: 0\nEst. Cost: 0 Bucks\nHouse Type: —"
+InfoLabel.TextColor3 = Color3.fromRGB(140, 220, 160)
+InfoLabel.TextSize = 14
+InfoLabel.Font = Enum.Font.GothamMedium
+InfoLabel.TextXAlignment = Enum.TextXAlignment.Left
+InfoLabel.TextYAlignment = Enum.TextYAlignment.Top
+InfoLabel.Parent = Main
 
 local function makeButton(text, y, color)
 	local btn = Instance.new("TextButton")
-	btn.Size = UDim2.new(1, -20, 0, 38)
-	btn.Position = UDim2.new(0, 10, 0, y)
-	btn.BackgroundColor3 = color or Color3.fromRGB(45, 45, 55)
+	btn.Size = UDim2.new(1, -24, 0, 40)
+	btn.Position = UDim2.new(0, 12, 0, y)
+	btn.BackgroundColor3 = color
 	btn.Text = text
 	btn.TextColor3 = Color3.fromRGB(255, 255, 255)
 	btn.TextSize = 15
 	btn.Font = Enum.Font.GothamSemibold
-	btn.AutoButtonColor = true
-	local c = Instance.new("UICorner")
-	c.CornerRadius = UDim.new(0, 8)
-	c.Parent = btn
+	Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 9)
 	btn.Parent = Main
 	return btn
 end
 
-local ScanBtn      = makeButton("Scan Interior (Deep)", 80, Color3.fromRGB(0, 140, 255))
-local GhostBtn     = makeButton("Ghost Preview (Free / Client)", 128, Color3.fromRGB(80, 80, 90))
-local ClearGhostBtn= makeButton("Clear Ghost", 176, Color3.fromRGB(60, 60, 70))
-local PlaceBtn     = makeButton("Real Place (Costs Bucks)", 224, Color3.fromRGB(0, 170, 100))
-local TPBtn        = makeButton("TP to Player House", 272, Color3.fromRGB(160, 90, 255))
-local SaveBtn      = makeButton("Save Layout (JSON)", 320, Color3.fromRGB(90, 90, 100))
-local LoadBtn      = makeButton("Load Layout from Clipboard", 368, Color3.fromRGB(90, 90, 100))
+local ScanBtn       = makeButton("Scan Interior (Deep)", 165, Color3.fromRGB(0, 132, 255))
+local GhostBtn      = makeButton("Ghost Preview (Free)", 215, Color3.fromRGB(70, 70, 85))
+local ClearGhostBtn = makeButton("Clear Ghost", 265, Color3.fromRGB(55, 55, 65))
+local PlaceBtn      = makeButton("Real Place (Costs Bucks)", 315, Color3.fromRGB(0, 160, 90))
+local TPBtn         = makeButton("TP to Player House", 365, Color3.fromRGB(140, 80, 255))
+local SaveBtn       = makeButton("Save Layout → Clipboard", 415, Color3.fromRGB(75, 75, 90))
 
--- Progress bar
+-- Progress
 local ProgressBG = Instance.new("Frame")
-ProgressBG.Size = UDim2.new(1, -20, 0, 8)
-ProgressBG.Position = UDim2.new(0, 10, 1, -18)
-ProgressBG.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+ProgressBG.Size = UDim2.new(1, -24, 0, 8)
+ProgressBG.Position = UDim2.new(0, 12, 1, -20)
+ProgressBG.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
 ProgressBG.BorderSizePixel = 0
 ProgressBG.Parent = Main
-local ProgressCorner = Instance.new("UICorner")
-ProgressCorner.CornerRadius = UDim.new(0, 4)
-ProgressCorner.Parent = ProgressBG
+Instance.new("UICorner", ProgressBG).CornerRadius = UDim.new(0, 4)
 
 local ProgressFill = Instance.new("Frame")
 ProgressFill.Size = UDim2.new(0, 0, 1, 0)
 ProgressFill.BackgroundColor3 = Color3.fromRGB(0, 180, 255)
 ProgressFill.BorderSizePixel = 0
 ProgressFill.Parent = ProgressBG
-local FillCorner = Instance.new("UICorner")
-FillCorner.CornerRadius = UDim.new(0, 4)
-FillCorner.Parent = ProgressFill
+Instance.new("UICorner", ProgressFill).CornerRadius = UDim.new(0, 4)
 
 local function setStatus(txt, color)
 	Status.Text = txt
-	Status.TextColor3 = color or Color3.fromRGB(160, 160, 170)
+	Status.TextColor3 = color or Color3.fromRGB(170, 170, 180)
+end
+
+local function updateInfo()
+	InfoLabel.Text = string.format(
+		"Furniture: %d\nEst. Cost: ~%s Bucks\nHouse Type: %s",
+		#ScannedLayout,
+		tostring(estimatedCost),
+		HouseName
+	)
 end
 
 local function setProgress(pct)
-	TweenService:Create(ProgressFill, TweenInfo.new(0.25), {Size = UDim2.new(math.clamp(pct, 0, 1), 0, 1, 0)}):Play()
+	TweenService:Create(ProgressFill, TweenInfo.new(0.2), {
+		Size = UDim2.new(math.clamp(pct, 0, 1), 0, 1, 0)
+	}):Play()
 end
 
--- ===================== CORE LOGIC =====================
+-- ===================== CORE =====================
 
-local function getHouseRoot()
+local function getBestHouse()
 	local char = LocalPlayer.Character
 	if not char or not char:FindFirstChild("HumanoidRootPart") then return nil end
-	local root = char.HumanoidRootPart
-	local best = nil
-	local bestDist = 40
+	local hrp = char.HumanoidRootPart
+
+	local bestModel, bestScore = nil, -1
 
 	for _, obj in ipairs(workspace:GetDescendants()) do
-		if obj:IsA("Model") and (obj.Name:lower():find("house") or obj:GetAttribute("Owner") or obj:FindFirstChild("House") or obj:FindFirstChildWhichIsA("BasePart")) then
+		if obj:IsA("Model") then
 			local primary = obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")
 			if primary then
-				local dist = (primary.Position - root.Position).Magnitude
-				if dist < bestDist then
-					bestDist = dist
-					best = obj
+				local dist = (primary.Position - hrp.Position).Magnitude
+				if dist < 55 then
+					-- Prefer models that contain many parts (real houses)
+					local partCount = 0
+					for _, d in ipairs(obj:GetDescendants()) do
+						if d:IsA("BasePart") then
+							partCount += 1
+							if partCount > 40 then break end
+						end
+					end
+					local score = partCount * 10 - dist
+					if score > bestScore then
+						bestScore = score
+						bestModel = obj
+					end
 				end
 			end
 		end
 	end
-	return best
+	return bestModel
 end
 
 local function scanHouse()
 	if isScanning then return end
 	isScanning = true
 	ScannedLayout = {}
-	setStatus("Scanning interior…", Color3.fromRGB(0, 180, 255))
+	estimatedCost = 0
+	HouseName = "Unknown"
 	setProgress(0)
+	setStatus("Looking for house…", Color3.fromRGB(0, 180, 255))
+	updateInfo()
 
-	local house = getHouseRoot()
+	local house = getBestHouse()
 	if not house then
-		setStatus("No house found nearby. Stand inside it.", Color3.fromRGB(255, 80, 80))
+		setStatus("No house found. Stand fully inside a room.", Color3.fromRGB(255, 90, 90))
 		isScanning = false
 		return
 	end
 
-	HouseOrigin = house:GetBoundingBox()
-	local originCF, size = HouseOrigin
-	local parts = {}
+	HouseName = house.Name
+	if HouseName == "" or HouseName == "Model" then
+		HouseName = "Custom / Unnamed House"
+	end
 
-	-- Deep scan – this is the fix
+	local cf, size = house:GetBoundingBox()
+	HouseOrigin = cf
+
+	setStatus("Collecting interior parts…", Color3.fromRGB(0, 180, 255))
+
+	local parts = {}
+	local seen = {}
+
+	-- Main deep scan
 	for _, desc in ipairs(house:GetDescendants()) do
-		if desc:IsA("BasePart") and not desc:IsDescendantOf(LocalPlayer.Character) then
-			-- skip pure terrain / invisible anchors if wanted
-			if desc.Transparency < 0.99 or desc.CanCollide then
+		if desc:IsA("BasePart") and not seen[desc] then
+			seen[desc] = true
+			-- Filter out pure invisibles / character parts
+			if desc.Transparency < 0.98 and not desc:IsDescendantOf(LocalPlayer.Character) then
 				table.insert(parts, desc)
 			end
 		end
 	end
 
-	-- Also grab any furniture models that might be parented under workspace but belong to this house (common in Adopt Me)
+	-- Extra nearby furniture (some houses keep furniture outside the main model)
 	for _, obj in ipairs(workspace:GetChildren()) do
-		if obj:IsA("Model") and obj ~= house then
+		if obj:IsA("Model") and obj ~= house and not seen[obj] then
 			local primary = obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")
 			if primary then
-				local dist = (primary.Position - originCF.Position).Magnitude
-				if dist < (size.Magnitude / 2 + 15) then
+				local dist = (primary.Position - cf.Position).Magnitude
+				if dist < (size.Magnitude * 0.6 + 20) then
 					for _, desc in ipairs(obj:GetDescendants()) do
-						if desc:IsA("BasePart") then
+						if desc:IsA("BasePart") and not seen[desc] and desc.Transparency < 0.98 then
+							seen[desc] = true
 							table.insert(parts, desc)
 						end
 					end
@@ -187,33 +228,42 @@ local function scanHouse()
 
 	local total = #parts
 	if total == 0 then
-		setStatus("0 parts found – try standing deeper inside", Color3.fromRGB(255, 120, 50))
+		setStatus("0 parts found. Try standing deeper inside.", Color3.fromRGB(255, 140, 50))
 		isScanning = false
+		updateInfo()
 		return
 	end
 
+	setStatus(string.format("Scanning %d parts…", total), Color3.fromRGB(0, 180, 255))
+
 	for i, part in ipairs(parts) do
-		local rel = originCF:ToObjectSpace(part.CFrame)
+		local rel = HouseOrigin:ToObjectSpace(part.CFrame)
 		table.insert(ScannedLayout, {
 			rel = {rel:GetComponents()},
 			size = {part.Size.X, part.Size.Y, part.Size.Z},
 			color = {part.Color.R, part.Color.G, part.Color.B},
-			material = part.Material.Name,
+			material = tostring(part.Material),
 			transparency = part.Transparency,
 			name = part.Name,
 			class = part.ClassName,
 			anchored = part.Anchored,
 			cancollide = part.CanCollide
 		})
-		if i % 50 == 0 then
+
+		-- Live update every 25 parts so it never looks frozen
+		if i % 25 == 0 or i == total then
 			setProgress(i / total)
-			setStatus(string.format("Scanning… %d / %d", i, total))
+			setStatus(string.format("Scanning… %d / %d", i, total), Color3.fromRGB(0, 180, 255))
+			estimatedCost = math.floor(#ScannedLayout * AVG_FURNITURE_PRICE)
+			updateInfo()
 			RunService.Heartbeat:Wait()
 		end
 	end
 
+	estimatedCost = math.floor(#ScannedLayout * AVG_FURNITURE_PRICE)
 	setProgress(1)
-	setStatus(string.format("Scanned %d interior parts ✓", #ScannedLayout), Color3.fromRGB(80, 255, 120))
+	setStatus(string.format("Done! %d furniture scanned", #ScannedLayout), Color3.fromRGB(80, 255, 140))
+	updateInfo()
 	isScanning = false
 end
 
@@ -232,101 +282,75 @@ local function spawnGhost()
 	clearGhost()
 
 	GhostFolder = Instance.new("Folder")
-	GhostFolder.Name = "GhostHousePreview"
+	GhostFolder.Name = "GhostPreview"
 	GhostFolder.Parent = workspace
 
-	local origin = HouseOrigin or CFrame.new(LocalPlayer.Character.HumanoidRootPart.Position)
+	local origin = HouseOrigin
+	setStatus("Building ghost preview…", Color3.fromRGB(180, 200, 255))
 
 	for i, data in ipairs(ScannedLayout) do
-		local part = Instance.new(data.class or "Part")
+		local part = Instance.new(data.class == "MeshPart" and "Part" or (data.class or "Part"))
 		part.Size = Vector3.new(unpack(data.size))
 		part.Color = Color3.new(unpack(data.color))
-		part.Material = Enum.Material[data.material] or Enum.Material.Plastic
-		part.Transparency = 0.45
+		pcall(function() part.Material = Enum.Material[data.material:match("%.(.+)$") or data.material] end)
+		part.Transparency = 0.42
 		part.Anchored = true
 		part.CanCollide = false
 		part.CastShadow = false
-		part.Name = data.name or "GhostPart"
+		part.Name = data.name or "Ghost"
 
 		local rel = CFrame.new(unpack(data.rel))
 		part.CFrame = origin * rel
 		part.Parent = GhostFolder
 
-		if i % 80 == 0 then
+		if i % 60 == 0 then
 			setProgress(i / #ScannedLayout)
 			RunService.Heartbeat:Wait()
 		end
 	end
 
 	setProgress(1)
-	setStatus(string.format("Ghost preview active (%d parts) – free / client only", #ScannedLayout), Color3.fromRGB(180, 220, 255))
+	setStatus(string.format("Ghost active (%d parts) – free / client only", #ScannedLayout), Color3.fromRGB(160, 210, 255))
 end
 
 local function realPlace()
 	if #ScannedLayout == 0 then
-		setStatus("Scan first", Color3.fromRGB(255, 100, 100))
+		setStatus("Scan a house first", Color3.fromRGB(255, 100, 100))
 		return
 	end
-	if isPlacing then return end
-	isPlacing = true
-	setStatus("Placing for real (this may cost bucks)…", Color3.fromRGB(255, 200, 50))
-
-	-- This is a simplified real-place. In practice you fire the game’s place remote.
-	-- Most public cloners just recreate the visual layout client-side for preview
-	-- and rely on the game’s own placement for the paid version.
-	-- For a true server place you would need the current remote path (it rotates).
-
-	setStatus("Real place requires current remote – use Ghost for free preview", Color3.fromRGB(255, 160, 60))
-	isPlacing = false
+	setStatus("Real place needs the current game remotes (they change often).\nUse Ghost for free preview.", Color3.fromRGB(255, 180, 60))
 end
 
 local function tpToPlayer()
-	local list = {}
-	for _, plr in ipairs(Players:GetPlayers()) do
-		if plr ~= LocalPlayer then
-			table.insert(list, plr.Name)
-		end
+	local others = {}
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p ~= LocalPlayer then table.insert(others, p) end
 	end
-	if #list == 0 then
-		setStatus("No other players", Color3.fromRGB(255, 100, 100))
+	if #others == 0 then
+		setStatus("No other players in server", Color3.fromRGB(255, 100, 100))
 		return
 	end
-
-	-- Simple picker
-	local chosen = list[1] -- you can expand this into a dropdown later
-	local target = Players:FindFirstChild(chosen)
-	if target and target.Character and target.Character:FindFirstChild("HumanoidRootPart") then
-		LocalPlayer.Character.HumanoidRootPart.CFrame = target.Character.HumanoidRootPart.CFrame + Vector3.new(0, 5, 0)
-		setStatus("Teleported to " .. chosen, Color3.fromRGB(180, 120, 255))
+	local target = others[math.random(1, #others)]
+	if target.Character and target.Character:FindFirstChild("HumanoidRootPart") then
+		LocalPlayer.Character.HumanoidRootPart.CFrame = target.Character.HumanoidRootPart.CFrame + Vector3.new(0, 6, 0)
+		setStatus("Teleported near " .. target.Name, Color3.fromRGB(180, 130, 255))
 	end
 end
 
 local function saveLayout()
 	if #ScannedLayout == 0 then return end
-	local json = HttpService:JSONEncode({
+	local payload = {
+		house = HouseName,
+		count = #ScannedLayout,
+		cost = estimatedCost,
 		origin = {HouseOrigin:GetComponents()},
 		parts = ScannedLayout
-	})
-	setclipboard(json)
-	setStatus("Layout copied to clipboard (JSON)", Color3.fromRGB(100, 255, 180))
+	}
+	setclipboard(HttpService:JSONEncode(payload))
+	setStatus("Layout + info copied to clipboard", Color3.fromRGB(100, 255, 180))
 end
 
-local function loadLayout()
-	local ok, data = pcall(function()
-		return HttpService:JSONDecode(getclipboard())
-	end)
-	if ok and data and data.parts then
-		ScannedLayout = data.parts
-		if data.origin then
-			HouseOrigin = CFrame.new(unpack(data.origin))
-		end
-		setStatus(string.format("Loaded %d parts from clipboard", #ScannedLayout), Color3.fromRGB(100, 255, 180))
-	else
-		setStatus("Invalid clipboard data", Color3.fromRGB(255, 80, 80))
-	end
-end
-
--- ===================== CONNECTIONS =====================
+-- Connections
 ScanBtn.MouseButton1Click:Connect(scanHouse)
 GhostBtn.MouseButton1Click:Connect(spawnGhost)
 ClearGhostBtn.MouseButton1Click:Connect(function()
@@ -336,6 +360,6 @@ end)
 PlaceBtn.MouseButton1Click:Connect(realPlace)
 TPBtn.MouseButton1Click:Connect(tpToPlayer)
 SaveBtn.MouseButton1Click:Connect(saveLayout)
-LoadBtn.MouseButton1Click:Connect(loadLayout)
 
-setStatus("Ready • Stand deep inside the house → Scan Interior")
+updateInfo()
+setStatus("Ready • Stand deep inside → Scan Interior")
