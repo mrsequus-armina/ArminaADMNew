@@ -1,13 +1,12 @@
--- Adopt Me House Interior Cloner v3 (Upgraded Menu)
--- Radius-based deep scan (fixes the 35-part problem)
--- Shows furniture count + estimated cost + house type
--- Ghost Preview • Save/Load • TP
+-- Adopt Me House Interior Cloner v3 (Video-Styled Menu + HousingAPI Wiring)
+-- Radius-based deep scan + House / Save / Others tabs + Build Modal + Progress Checklist
 
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local HttpService = game:GetService("HttpService")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
@@ -16,52 +15,158 @@ local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 local ScannedLayout = {}
 local HouseOrigin = CFrame.new()
 local HouseName = "Unknown"
+local SelectedHouseId = "micro_2023"
 local GhostFolder = nil
 local isScanning = false
+local isBuilding = false
+local cancelBuild = false
 local estimatedCost = 0
-local AVG_PRICE = 85 -- rough average per piece
+local AVG_PRICE = 85 -- fallback average per item/part
+local buildSpeedMultiplier = 1
 
--- ===================== THEME =====================
-local Theme = {
-	Bg = Color3.fromRGB(14, 15, 23),
-	Surface = Color3.fromRGB(22, 24, 36),
-	SurfaceAlt = Color3.fromRGB(29, 32, 47),
-	Stroke = Color3.fromRGB(52, 58, 82),
-	Text = Color3.fromRGB(242, 245, 255),
-	Muted = Color3.fromRGB(152, 160, 184),
-	Accent = Color3.fromRGB(56, 152, 255),
-	AccentGlow = Color3.fromRGB(92, 182, 255),
-	Success = Color3.fromRGB(42, 185, 118),
-	Purple = Color3.fromRGB(146, 92, 255),
-	NeutralBtn = Color3.fromRGB(38, 42, 60),
-	DangerSoft = Color3.fromRGB(255, 96, 108),
-	WarnSoft = Color3.fromRGB(255, 188, 72),
+-- Optional price table by item/model name
+local FurniturePrices = {
+	-- ["Example Chair"] = 65,
 }
 
-local function tween(obj, info, props)
-	local t = TweenService:Create(obj, info, props)
-	t:Play()
-	return t
+-- Known internal house IDs from your scanned ContentPacks modules
+local KnownHouseIds = {
+	"micro_2023",
+	"Micro2023",
+	"Micro",
+	"BeehiveHouse",
+	"Fairytale2026PrincessCastle",
+	"DinoHouse",
+	"HalloweenHotelInterior",
+	"HalloweenHouse2026",
+	"IceCreamHouse",
+	"MoonHouseInterior",
+	"SoccerHouse",
+	"BaseplateHouse",
+	"ShowcaseHouse",
+	"CozyCabin",
+	"Biodome",
+	"BigCastle",
+	"PirateShipHouse",
+	"EcoNaturalEarthHouse",
+	"MermaidMansion",
+	"FamilyHouse",
+	"TreeHouse",
+	"Estate",
+	"FairyHouse",
+	"DonutShop",
+	"SmallCastle",
+	"ShopHouse",
+	"ContainerHome",
+	"ScaryHouse",
+	"GingerbreadHouse",
+	"LunarHouse",
+	"CrookedHouse",
+	"SandboxIsland",
+	"FutureHouse",
+	"ModernMansion",
+	"RoyalPalace",
+	"DragonsCastle",
+	"PartyHouse",
+	"HollywoodHouse",
+	"Apartment",
+	"CelebrityMansion",
+	"Millionaire",
+	"SpaceHouse",
+	"VIPHouse",
+	"IglooHouse",
+	"BunkerHouse",
+	"CastleHouse",
+	"HospitalHouse",
+	"SchoolHouse",
+	"ToyshopHouse",
+	"SafariHouse",
+	"RacetrackHouse",
+	"HillsideMansion",
+	"LuxuryHouse",
+	"FriendlyHome",
+	"HauntedHouse",
+	"QueenslanderHome",
+	"KoreanHouse",
+	"PuddingHouse",
+}
+
+-- ===================== HOUSING API CONFIG =====================
+-- Verify the exact inner table keys for each remote before enabling live firing.
+local RemotesConfig = {
+	Enabled = false, -- set to true once inner {...} table schemas are confirmed
+	SellFurniturePath = { "API", "HousingAPI/SellFurniture" },
+	BuyHousePath = { "API", "HousingAPI/BuyHouseWithAddons" },
+	BuyFurnituresPath = { "API", "HousingAPI/BuyFurnitures" },
+	DefaultHouseColor = Color3.fromRGB(196, 40, 28),
+	ItemDelay = 0.08,
+}
+
+local function resolveRemote(pathList)
+	local cur = ReplicatedStorage
+	for _, seg in ipairs(pathList) do
+		if not cur then return nil end
+		cur = cur:FindFirstChild(seg)
+	end
+	return cur
 end
 
-local function addCorner(parent, radius)
-	local c = Instance.new("UICorner")
-	c.CornerRadius = UDim.new(0, radius or 10)
-	c.Parent = parent
-	return c
+local function invokeHousingRemote(remote, ...)
+	if not remote then
+		return false, "Remote not found"
+	end
+	if remote:IsA("RemoteFunction") then
+		return pcall(function(...)
+			return remote:InvokeServer(...)
+		end, ...)
+	elseif remote:IsA("RemoteEvent") then
+		return pcall(function(...)
+			remote:FireServer(...)
+		end, ...)
+	end
+	return false, "Unsupported remote class"
 end
 
-local function addStroke(parent, color, thickness, transparency)
+-- ===================== THEME =====================
+local C = {
+	Bg = Color3.fromRGB(16, 17, 23),
+	Panel = Color3.fromRGB(23, 25, 34),
+	Card = Color3.fromRGB(30, 33, 45),
+	CardHover = Color3.fromRGB(38, 42, 57),
+	Border = Color3.fromRGB(54, 59, 78),
+	Text = Color3.fromRGB(244, 246, 252),
+	Subtext = Color3.fromRGB(154, 161, 182),
+	Accent = Color3.fromRGB(79, 110, 247),
+	AccentBright = Color3.fromRGB(108, 136, 255),
+	Green = Color3.fromRGB(52, 199, 123),
+	Amber = Color3.fromRGB(255, 184, 66),
+	Red = Color3.fromRGB(255, 92, 108),
+}
+
+local function tween(obj, t, props)
+	local tw = TweenService:Create(obj, TweenInfo.new(t or 0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), props)
+	tw:Play()
+	return tw
+end
+
+local function corner(parent, r)
+	local u = Instance.new("UICorner")
+	u.CornerRadius = UDim.new(0, r or 10)
+	u.Parent = parent
+	return u
+end
+
+local function stroke(parent, color, thickness, transp)
 	local s = Instance.new("UIStroke")
-	s.Color = color or Theme.Stroke
+	s.Color = color or C.Border
 	s.Thickness = thickness or 1
-	s.Transparency = transparency or 0.35
+	s.Transparency = transp or 0.35
 	s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
 	s.Parent = parent
 	return s
 end
 
--- ===================== UI =====================
+-- ===================== SCREEN GUI =====================
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "HouseClonerUI"
 ScreenGui.ResetOnSpawn = false
@@ -69,101 +174,92 @@ ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 ScreenGui.Parent = PlayerGui
 
 local Main = Instance.new("Frame")
-Main.Name = "MainWindow"
-Main.Size = UDim2.new(0, 372, 0, 444)
-Main.Position = UDim2.new(0.5, -186, 0.5, -222)
-Main.BackgroundColor3 = Theme.Bg
+Main.Name = "MainMenu"
+Main.Size = UDim2.new(0, 540, 0, 340)
+Main.Position = UDim2.new(0.5, -270, 0.5, -170)
+Main.BackgroundColor3 = C.Bg
 Main.BorderSizePixel = 0
 Main.ClipsDescendants = true
 Main.Parent = ScreenGui
-addCorner(Main, 16)
-addStroke(Main, Theme.Stroke, 1.2, 0.2)
+corner(Main, 14)
+stroke(Main, C.Border, 1.2, 0.2)
 
-local UIScale = Instance.new("UIScale")
-UIScale.Parent = Main
+-- Top Tab Bar (House | Save | Others)
+local TopBar = Instance.new("Frame")
+TopBar.Name = "TopBar"
+TopBar.Size = UDim2.new(1, 0, 0, 42)
+TopBar.BackgroundColor3 = C.Panel
+TopBar.BorderSizePixel = 0
+TopBar.Parent = Main
+stroke(TopBar, C.Border, 1, 0.55)
 
-local function updateScale()
-	local cam = workspace.CurrentCamera
-	if not cam then return end
-	local vp = cam.ViewportSize
-	local scale = math.clamp(math.min(vp.X / 440, vp.Y / 540), 0.72, 1.15)
-	UIScale.Scale = scale
+local TopTitle = Instance.new("TextLabel")
+TopTitle.Size = UDim2.new(0, 150, 1, 0)
+TopTitle.Position = UDim2.new(0, 14, 0, 0)
+TopTitle.BackgroundTransparency = 1
+TopTitle.Text = "House Cloner"
+TopTitle.TextColor3 = C.Text
+TopTitle.TextSize = 14
+TopTitle.Font = Enum.Font.GothamBold
+TopTitle.TextXAlignment = Enum.TextXAlignment.Left
+TopTitle.Parent = TopBar
+
+local TabsHolder = Instance.new("Frame")
+TabsHolder.Size = UDim2.new(0, 250, 0, 28)
+TabsHolder.Position = UDim2.new(0.5, -125, 0.5, -14)
+TabsHolder.BackgroundColor3 = C.Bg
+TabsHolder.BorderSizePixel = 0
+TabsHolder.Parent = TopBar
+corner(TabsHolder, 7)
+
+local TabList = Instance.new("UIListLayout")
+TabList.FillDirection = Enum.FillDirection.Horizontal
+TabList.HorizontalAlignment = Enum.HorizontalAlignment.Center
+TabList.Padding = UDim.new(0, 4)
+TabList.Parent = TabsHolder
+
+local TabPad = Instance.new("UIPadding")
+TabPad.PaddingTop = UDim.new(0, 3)
+TabPad.PaddingBottom = UDim.new(0, 3)
+TabPad.PaddingLeft = UDim.new(0, 3)
+TabPad.PaddingRight = UDim.new(0, 3)
+TabPad.Parent = TabsHolder
+
+local function createTopTab(text)
+	local b = Instance.new("TextButton")
+	b.Size = UDim2.new(0, 76, 1, 0)
+	b.BackgroundColor3 = C.Card
+	b.BackgroundTransparency = 1
+	b.Text = text
+	b.TextColor3 = C.Subtext
+	b.TextSize = 12
+	b.Font = Enum.Font.GothamBold
+	b.AutoButtonColor = false
+	b.Parent = TabsHolder
+	corner(b, 6)
+	return b
 end
-updateScale()
-workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
-	updateScale()
-	if workspace.CurrentCamera then
-		workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(updateScale)
-	end
-end)
-if workspace.CurrentCamera then
-	workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(updateScale)
-end
 
--- Top Header Bar (also handles smooth custom dragging)
-local Header = Instance.new("Frame")
-Header.Name = "Header"
-Header.Size = UDim2.new(1, 0, 0, 52)
-Header.BackgroundColor3 = Theme.Surface
-Header.BorderSizePixel = 0
-Header.Parent = Main
+local TabHouse = createTopTab("House")
+local TabSave = createTopTab("Save")
+local TabOthers = createTopTab("Others")
 
-local HeaderGrad = Instance.new("UIGradient")
-HeaderGrad.Color = ColorSequence.new({
-	ColorSequenceKeypoint.new(0, Color3.fromRGB(32, 42, 68)),
-	ColorSequenceKeypoint.new(1, Theme.Surface),
-})
-HeaderGrad.Rotation = 15
-HeaderGrad.Parent = Header
+local HideBtn = Instance.new("TextButton")
+HideBtn.Size = UDim2.new(0, 28, 0, 28)
+HideBtn.Position = UDim2.new(1, -38, 0.5, -14)
+HideBtn.BackgroundColor3 = C.Card
+HideBtn.Text = "—"
+HideBtn.TextColor3 = C.Text
+HideBtn.TextSize = 13
+HideBtn.Font = Enum.Font.GothamBold
+HideBtn.AutoButtonColor = false
+HideBtn.Parent = TopBar
+corner(HideBtn, 7)
 
-local AccentDot = Instance.new("Frame")
-AccentDot.Size = UDim2.new(0, 8, 0, 8)
-AccentDot.Position = UDim2.new(0, 16, 0.5, -4)
-AccentDot.BackgroundColor3 = Theme.AccentGlow
-AccentDot.BorderSizePixel = 0
-AccentDot.Parent = Header
-addCorner(AccentDot, 99)
-
-local Title = Instance.new("TextLabel")
-Title.Size = UDim2.new(1, -110, 0, 22)
-Title.Position = UDim2.new(0, 32, 0, 8)
-Title.BackgroundTransparency = 1
-Title.Text = "House Cloner"
-Title.TextColor3 = Theme.Text
-Title.TextSize = 17
-Title.Font = Enum.Font.GothamBold
-Title.TextXAlignment = Enum.TextXAlignment.Left
-Title.Parent = Header
-
-local SubTitle = Instance.new("TextLabel")
-SubTitle.Size = UDim2.new(1, -110, 0, 16)
-SubTitle.Position = UDim2.new(0, 32, 0, 28)
-SubTitle.BackgroundTransparency = 1
-SubTitle.Text = "DEEP SCAN • GHOST • SAVE/LOAD"
-SubTitle.TextColor3 = Theme.AccentGlow
-SubTitle.TextSize = 10
-SubTitle.Font = Enum.Font.GothamBold
-SubTitle.TextXAlignment = Enum.TextXAlignment.Left
-SubTitle.Parent = Header
-
-local CollapseBtn = Instance.new("TextButton")
-CollapseBtn.Size = UDim2.new(0, 30, 0, 30)
-CollapseBtn.Position = UDim2.new(1, -42, 0.5, -15)
-CollapseBtn.BackgroundColor3 = Theme.SurfaceAlt
-CollapseBtn.Text = "—"
-CollapseBtn.TextColor3 = Theme.Text
-CollapseBtn.TextSize = 14
-CollapseBtn.Font = Enum.Font.GothamBold
-CollapseBtn.AutoButtonColor = false
-CollapseBtn.Parent = Header
-addCorner(CollapseBtn, 8)
-addStroke(CollapseBtn, Theme.Stroke, 1, 0.45)
-
--- Custom smooth drag on Header
+-- Smooth dragging via TopBar
 do
-	local dragging = false
-	local dragStart, startPos
-	Header.InputBegan:Connect(function(input)
+	local dragging, dragStart, startPos
+	TopBar.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 			dragging = true
 			dragStart = input.Position
@@ -178,279 +274,568 @@ do
 	UserInputService.InputChanged:Connect(function(input)
 		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
 			local delta = input.Position - dragStart
-			Main.Position = UDim2.new(
-				startPos.X.Scale,
-				startPos.X.Offset + delta.X,
-				startPos.Y.Scale,
-				startPos.Y.Offset + delta.Y
-			)
+			Main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
 		end
 	end)
 end
 
--- Body container below Header
-local Body = Instance.new("Frame")
-Body.Name = "Body"
-Body.Size = UDim2.new(1, 0, 1, -52)
-Body.Position = UDim2.new(0, 0, 0, 52)
-Body.BackgroundTransparency = 1
-Body.Parent = Main
+-- Content Area
+local ContentArea = Instance.new("Frame")
+ContentArea.Size = UDim2.new(1, -24, 1, -54)
+ContentArea.Position = UDim2.new(0, 12, 0, 48)
+ContentArea.BackgroundTransparency = 1
+ContentArea.Parent = Main
 
--- Tab Switcher
-local TabBar = Instance.new("Frame")
-TabBar.Size = UDim2.new(1, -28, 0, 34)
-TabBar.Position = UDim2.new(0, 14, 0, 10)
-TabBar.BackgroundColor3 = Theme.Surface
-TabBar.BorderSizePixel = 0
-TabBar.Parent = Body
-addCorner(TabBar, 10)
-addStroke(TabBar, Theme.Stroke, 1, 0.45)
+local HousePage = Instance.new("Frame")
+HousePage.Size = UDim2.new(1, 0, 1, 0)
+HousePage.BackgroundTransparency = 1
+HousePage.Parent = ContentArea
 
-local TabLayout = Instance.new("UIListLayout")
-TabLayout.FillDirection = Enum.FillDirection.Horizontal
-TabLayout.Padding = UDim.new(0, 4)
-TabLayout.Parent = TabBar
+local SavePage = Instance.new("Frame")
+SavePage.Size = UDim2.new(1, 0, 1, 0)
+SavePage.BackgroundTransparency = 1
+SavePage.Visible = false
+SavePage.Parent = ContentArea
 
-local TabPad = Instance.new("UIPadding")
-TabPad.PaddingTop = UDim.new(0, 3)
-TabPad.PaddingBottom = UDim.new(0, 3)
-TabPad.PaddingLeft = UDim.new(0, 3)
-TabPad.PaddingRight = UDim.new(0, 3)
-TabPad.Parent = TabBar
+local OthersPage = Instance.new("Frame")
+OthersPage.Size = UDim2.new(1, 0, 1, 0)
+OthersPage.BackgroundTransparency = 1
+OthersPage.Visible = false
+OthersPage.Parent = ContentArea
 
-local function makeTab(labelText)
-	local t = Instance.new("TextButton")
-	t.Size = UDim2.new(0.5, -2, 1, 0)
-	t.BackgroundColor3 = Theme.SurfaceAlt
-	t.BackgroundTransparency = 1
-	t.Text = labelText
-	t.TextColor3 = Theme.Muted
-	t.TextSize = 13
-	t.Font = Enum.Font.GothamSemibold
-	t.AutoButtonColor = false
-	t.Parent = TabBar
-	addCorner(t, 7)
-	return t
+local function switchTab(name)
+	HousePage.Visible = (name == "house")
+	SavePage.Visible = (name == "save")
+	OthersPage.Visible = (name == "others")
+	for _, pair in ipairs({
+		{ TabHouse, name == "house" },
+		{ TabSave, name == "save" },
+		{ TabOthers, name == "others" },
+	}) do
+		tween(pair[1], 0.14, {
+			BackgroundTransparency = pair[2] and 0 or 1,
+			TextColor3 = pair[2] and C.Text or C.Subtext,
+		})
+	end
 end
 
-local ScanTabBtn = makeTab("Scan & Preview")
-local ToolsTabBtn = makeTab("TP & Layout")
+TabHouse.MouseButton1Click:Connect(function() switchTab("house") end)
+TabSave.MouseButton1Click:Connect(function() switchTab("save") end)
+TabOthers.MouseButton1Click:Connect(function() switchTab("others") end)
+switchTab("house")
 
--- Pages
-local ScanPage = Instance.new("Frame")
-ScanPage.Size = UDim2.new(1, -28, 1, -76)
-ScanPage.Position = UDim2.new(0, 14, 0, 52)
-ScanPage.BackgroundTransparency = 1
-ScanPage.Parent = Body
+-- ===================== HOUSE TAB =====================
+local PreviewThumb = Instance.new("Frame")
+PreviewThumb.Size = UDim2.new(0, 224, 0, 146)
+PreviewThumb.Position = UDim2.new(0, 0, 0, 0)
+PreviewThumb.BackgroundColor3 = C.Card
+PreviewThumb.BorderSizePixel = 0
+PreviewThumb.Parent = HousePage
+corner(PreviewThumb, 10)
+stroke(PreviewThumb, C.Border, 1, 0.4)
 
-local ToolsPage = Instance.new("Frame")
-ToolsPage.Size = UDim2.new(1, -28, 1, -76)
-ToolsPage.Position = UDim2.new(0, 14, 0, 52)
-ToolsPage.BackgroundTransparency = 1
-ToolsPage.Visible = false
-ToolsPage.Parent = Body
+local ThumbTag = Instance.new("TextLabel")
+ThumbTag.Size = UDim2.new(1, -16, 0, 20)
+ThumbTag.Position = UDim2.new(0, 8, 0, 8)
+ThumbTag.BackgroundTransparency = 1
+ThumbTag.Text = "INTERIOR SCAN"
+ThumbTag.TextColor3 = C.AccentBright
+ThumbTag.TextSize = 10
+ThumbTag.Font = Enum.Font.GothamBold
+ThumbTag.TextXAlignment = Enum.TextXAlignment.Left
+ThumbTag.Parent = PreviewThumb
 
-local function setActiveTab(tabName)
-	local isScan = (tabName == "scan")
-	ScanPage.Visible = isScan
-	ToolsPage.Visible = not isScan
+local ThumbCount = Instance.new("TextLabel")
+ThumbCount.Size = UDim2.new(1, -16, 0, 34)
+ThumbCount.Position = UDim2.new(0, 8, 0, 42)
+ThumbCount.BackgroundTransparency = 1
+ThumbCount.Text = "0 Items"
+ThumbCount.TextColor3 = C.Text
+ThumbCount.TextSize = 22
+ThumbCount.Font = Enum.Font.GothamBold
+ThumbCount.TextXAlignment = Enum.TextXAlignment.Left
+ThumbCount.Parent = PreviewThumb
 
-	tween(ScanTabBtn, TweenInfo.new(0.16), {
-		BackgroundTransparency = isScan and 0 or 1,
-		TextColor3 = isScan and Theme.Text or Theme.Muted,
-	})
-	tween(ToolsTabBtn, TweenInfo.new(0.16), {
-		BackgroundTransparency = (not isScan) and 0 or 1,
-		TextColor3 = (not isScan) and Theme.Text or Theme.Muted,
-	})
-end
+local ThumbStatus = Instance.new("TextLabel")
+ThumbStatus.Size = UDim2.new(1, -16, 0, 46)
+ThumbStatus.Position = UDim2.new(0, 8, 1, -54)
+ThumbStatus.BackgroundTransparency = 1
+ThumbStatus.Text = "Stand deep inside → Scan"
+ThumbStatus.TextColor3 = C.Subtext
+ThumbStatus.TextSize = 11
+ThumbStatus.Font = Enum.Font.Gotham
+ThumbStatus.TextXAlignment = Enum.TextXAlignment.Left
+ThumbStatus.TextYAlignment = Enum.TextYAlignment.Bottom
+ThumbStatus.TextWrapped = true
+ThumbStatus.Parent = PreviewThumb
 
-ScanTabBtn.MouseButton1Click:Connect(function() setActiveTab("scan") end)
-ToolsTabBtn.MouseButton1Click:Connect(function() setActiveTab("tools") end)
-setActiveTab("scan")
+local DetailsCard = Instance.new("Frame")
+DetailsCard.Size = UDim2.new(1, -236, 0, 146)
+DetailsCard.Position = UDim2.new(0, 236, 0, 0)
+DetailsCard.BackgroundColor3 = C.Panel
+DetailsCard.BorderSizePixel = 0
+DetailsCard.Parent = HousePage
+corner(DetailsCard, 10)
+stroke(DetailsCard, C.Border, 1, 0.4)
 
--- Telemetry Card (Furniture Count, Est. Cost, House Type)
-local StatsCard = Instance.new("Frame")
-StatsCard.Size = UDim2.new(1, 0, 0, 74)
-StatsCard.BackgroundColor3 = Theme.Surface
-StatsCard.BorderSizePixel = 0
-StatsCard.Parent = ScanPage
-addCorner(StatsCard, 12)
-addStroke(StatsCard, Theme.Stroke, 1, 0.35)
+local HouseTitleLbl = Instance.new("TextLabel")
+HouseTitleLbl.Size = UDim2.new(1, -20, 0, 24)
+HouseTitleLbl.Position = UDim2.new(0, 12, 0, 10)
+HouseTitleLbl.BackgroundTransparency = 1
+HouseTitleLbl.Text = "Unknown House"
+HouseTitleLbl.TextColor3 = C.Text
+HouseTitleLbl.TextSize = 16
+HouseTitleLbl.Font = Enum.Font.GothamBold
+HouseTitleLbl.TextXAlignment = Enum.TextXAlignment.Left
+HouseTitleLbl.TextTruncate = Enum.TextTruncate.AtEnd
+HouseTitleLbl.Parent = DetailsCard
 
-local function makeStatCol(xScale, xOffset, titleText, valueColor)
-	local col = Instance.new("Frame")
-	col.Size = UDim2.new(xScale, xOffset, 1, -12)
-	col.Position = UDim2.new(0, 0, 0, 6)
-	col.BackgroundTransparency = 1
-	col.Parent = StatsCard
+local AuthorLbl = Instance.new("TextLabel")
+AuthorLbl.Size = UDim2.new(1, -20, 0, 18)
+AuthorLbl.Position = UDim2.new(0, 12, 0, 34)
+AuthorLbl.BackgroundTransparency = 1
+AuthorLbl.Text = "ID: " .. SelectedHouseId
+AuthorLbl.TextColor3 = C.Subtext
+AuthorLbl.TextSize = 12
+AuthorLbl.Font = Enum.Font.Gotham
+AuthorLbl.TextXAlignment = Enum.TextXAlignment.Left
+AuthorLbl.TextTruncate = Enum.TextTruncate.AtEnd
+AuthorLbl.Parent = DetailsCard
 
-	local lbl = Instance.new("TextLabel")
-	lbl.Size = UDim2.new(1, -10, 0, 16)
-	lbl.Position = UDim2.new(0, 10, 0, 4)
-	lbl.BackgroundTransparency = 1
-	lbl.Text = titleText
-	lbl.TextColor3 = Theme.Muted
-	lbl.TextSize = 11
-	lbl.Font = Enum.Font.GothamMedium
-	lbl.TextXAlignment = Enum.TextXAlignment.Left
-	lbl.Parent = col
+local CostLbl = Instance.new("TextLabel")
+CostLbl.Size = UDim2.new(1, -20, 0, 22)
+CostLbl.Position = UDim2.new(0, 12, 0, 58)
+CostLbl.BackgroundTransparency = 1
+CostLbl.Text = "Est. Cost: $0"
+CostLbl.TextColor3 = C.Green
+CostLbl.TextSize = 14
+CostLbl.Font = Enum.Font.GothamBold
+CostLbl.TextXAlignment = Enum.TextXAlignment.Left
+CostLbl.Parent = DetailsCard
 
-	local val = Instance.new("TextLabel")
-	val.Size = UDim2.new(1, -10, 0, 28)
-	val.Position = UDim2.new(0, 10, 0, 22)
-	val.BackgroundTransparency = 1
-	val.Text = "—"
-	val.TextColor3 = valueColor or Theme.Text
-	val.TextSize = 15
-	val.Font = Enum.Font.GothamBold
-	val.TextXAlignment = Enum.TextXAlignment.Left
-	val.TextTruncate = Enum.TextTruncate.AtEnd
-	val.Parent = col
+local GhostBtn = Instance.new("TextButton")
+GhostBtn.Size = UDim2.new(0.45, -14, 0, 34)
+GhostBtn.Position = UDim2.new(0, 12, 1, -44)
+GhostBtn.BackgroundColor3 = C.Card
+GhostBtn.Text = "PREVIEW"
+GhostBtn.TextColor3 = C.Text
+GhostBtn.TextSize = 12
+GhostBtn.Font = Enum.Font.GothamBold
+GhostBtn.AutoButtonColor = false
+GhostBtn.Parent = DetailsCard
+corner(GhostBtn, 8)
+stroke(GhostBtn, C.Border, 1, 0.35)
 
-	return col, val
-end
+local PlaceBtn = Instance.new("TextButton")
+PlaceBtn.Size = UDim2.new(0.55, -6, 0, 34)
+PlaceBtn.Position = UDim2.new(0.45, 2, 1, -44)
+PlaceBtn.BackgroundColor3 = C.Accent
+PlaceBtn.Text = "BUILD HOUSE"
+PlaceBtn.TextColor3 = C.Text
+PlaceBtn.TextSize = 12
+PlaceBtn.Font = Enum.Font.GothamBold
+PlaceBtn.AutoButtonColor = false
+PlaceBtn.Parent = DetailsCard
+corner(PlaceBtn, 8)
 
-local ColCount, ValCount = makeStatCol(0.32, 0, "FURNITURE", Theme.Text)
-local ColCost, ValCost = makeStatCol(0.34, 0, "EST. COST", Theme.Success)
-ColCost.Position = UDim2.new(0.32, 0, 0, 6)
-local ColHouse, ValHouse = makeStatCol(0.34, 0, "HOUSE TYPE", Theme.AccentGlow)
-ColHouse.Position = UDim2.new(0.66, 0, 0, 6)
+-- House Module ID input row
+local IncludesCard = Instance.new("Frame")
+IncludesCard.Size = UDim2.new(1, 0, 0, 62)
+IncludesCard.Position = UDim2.new(0, 0, 0, 154)
+IncludesCard.BackgroundColor3 = C.Panel
+IncludesCard.BorderSizePixel = 0
+IncludesCard.Parent = HousePage
+corner(IncludesCard, 10)
+stroke(IncludesCard, C.Border, 1, 0.45)
 
--- Keep InfoLabel reference alive in case external/debug code reads it
-local InfoLabel = Instance.new("TextLabel")
-InfoLabel.Name = "InfoLabelCompat"
-InfoLabel.Visible = false
-InfoLabel.Text = "Furniture: 0\nEst. Cost: 0 Bucks\nHouse Type: —"
-InfoLabel.Parent = StatsCard
+local IncTitle = Instance.new("TextLabel")
+IncTitle.Size = UDim2.new(0.42, -12, 0, 16)
+IncTitle.Position = UDim2.new(0, 12, 0, 6)
+IncTitle.BackgroundTransparency = 1
+IncTitle.Text = "Target House ID"
+IncTitle.TextColor3 = C.Subtext
+IncTitle.TextSize = 11
+IncTitle.Font = Enum.Font.GothamBold
+IncTitle.TextXAlignment = Enum.TextXAlignment.Left
+IncTitle.Parent = IncludesCard
 
--- Status Banner
-local StatusCard = Instance.new("Frame")
-StatusCard.Size = UDim2.new(1, 0, 0, 44)
-StatusCard.Position = UDim2.new(0, 0, 0, 82)
-StatusCard.BackgroundColor3 = Theme.SurfaceAlt
-StatusCard.BorderSizePixel = 0
-StatusCard.Parent = ScanPage
-addCorner(StatusCard, 10)
-addStroke(StatusCard, Theme.Stroke, 1, 0.45)
+local HouseIdBox = Instance.new("TextBox")
+HouseIdBox.Size = UDim2.new(0.55, 0, 0, 26)
+HouseIdBox.Position = UDim2.new(0.42, 0, 0, 6)
+HouseIdBox.BackgroundColor3 = C.Card
+HouseIdBox.Text = SelectedHouseId
+HouseIdBox.PlaceholderText = "e.g. micro_2023"
+HouseIdBox.TextColor3 = C.Text
+HouseIdBox.PlaceholderColor3 = C.Subtext
+HouseIdBox.TextSize = 11
+HouseIdBox.Font = Enum.Font.GothamMedium
+HouseIdBox.ClearTextOnFocus = false
+HouseIdBox.Parent = IncludesCard
+corner(HouseIdBox, 6)
+stroke(HouseIdBox, C.Border, 1, 0.4)
 
-local Status = Instance.new("TextLabel")
-Status.Size = UDim2.new(1, -18, 1, -8)
-Status.Position = UDim2.new(0, 9, 0, 4)
-Status.BackgroundTransparency = 1
-Status.Text = "Stand deep inside → press Scan Interior"
-Status.TextColor3 = Theme.Muted
-Status.TextSize = 12
-Status.Font = Enum.Font.GothamMedium
-Status.TextXAlignment = Enum.TextXAlignment.Left
-Status.TextYAlignment = Enum.TextYAlignment.Center
-Status.TextWrapped = true
-Status.Parent = StatusCard
+local IncList = Instance.new("TextLabel")
+IncList.Size = UDim2.new(1, -20, 0, 20)
+IncList.Position = UDim2.new(0, 12, 0, 36)
+IncList.BackgroundTransparency = 1
+IncList.Text = "Remotes: SellFurniture • BuyHouseWithAddons • BuyFurnitures"
+IncList.TextColor3 = C.Subtext
+IncList.TextSize = 10
+IncList.Font = Enum.Font.Gotham
+IncList.TextXAlignment = Enum.TextXAlignment.Left
+IncList.TextTruncate = Enum.TextTruncate.AtEnd
+IncList.Parent = IncludesCard
 
--- Button builder with smooth hover & click feedback
-local function btn(text, y, color, parentFrame, height)
-	local b = Instance.new("TextButton")
-	b.Size = UDim2.new(1, 0, 0, height or 38)
-	b.Position = UDim2.new(0, 0, 0, y)
-	b.BackgroundColor3 = color
-	b.Text = text
-	b.TextColor3 = Theme.Text
-	b.TextSize = 14
-	b.Font = Enum.Font.GothamSemibold
-	b.AutoButtonColor = false
-	b.Parent = parentFrame or ScanPage
-	addCorner(b, 10)
-
-	local stroke = addStroke(b, Color3.fromRGB(255, 255, 255), 1, 0.85)
-	local baseColor = color
-	local hoverColor = color:Lerp(Color3.fromRGB(255, 255, 255), 0.14)
-	local pressColor = color:Lerp(Color3.fromRGB(0, 0, 0), 0.16)
-
-	b.MouseEnter:Connect(function()
-		tween(b, TweenInfo.new(0.14), { BackgroundColor3 = hoverColor })
-		tween(stroke, TweenInfo.new(0.14), { Transparency = 0.55 })
-	end)
-	b.MouseLeave:Connect(function()
-		tween(b, TweenInfo.new(0.14), { BackgroundColor3 = baseColor })
-		tween(stroke, TweenInfo.new(0.14), { Transparency = 0.85 })
-	end)
-	b.MouseButton1Down:Connect(function()
-		tween(b, TweenInfo.new(0.08), { BackgroundColor3 = pressColor })
-	end)
-	b.MouseButton1Up:Connect(function()
-		tween(b, TweenInfo.new(0.12), { BackgroundColor3 = hoverColor })
-	end)
-
-	return b
-end
-
--- Scan Page Controls
-local ScanBtn       = btn("Scan Interior (Deep Radius)", 134, Theme.Accent, ScanPage, 40)
-local GhostBtn      = btn("Ghost Preview (Free)", 182, Theme.NeutralBtn, ScanPage, 38)
-local ClearGhostBtn = btn("Clear Ghost", 226, Theme.SurfaceAlt, ScanPage, 36)
-local PlaceBtn      = btn("Real Place (Costs Bucks)", 268, Theme.Success, ScanPage, 38)
-
--- Tools Page Controls (TP & Clipboard Save/Load)
-local ToolsHint = Instance.new("TextLabel")
-ToolsHint.Size = UDim2.new(1, 0, 0, 44)
-ToolsHint.Position = UDim2.new(0, 0, 0, 0)
-ToolsHint.BackgroundColor3 = Theme.Surface
-ToolsHint.Text = "Quickly warp near another player or export/import scanned furniture JSON."
-ToolsHint.TextColor3 = Theme.Muted
-ToolsHint.TextSize = 12
-ToolsHint.Font = Enum.Font.Gotham
-ToolsHint.TextWrapped = true
-ToolsHint.Parent = ToolsPage
-addCorner(ToolsHint, 10)
-addStroke(ToolsHint, Theme.Stroke, 1, 0.4)
-
-local TPBtn   = btn("TP to Player House", 54, Theme.Purple, ToolsPage, 42)
-local SaveBtn = btn("Save Layout → Clipboard", 106, Theme.NeutralBtn, ToolsPage, 40)
-local LoadBtn = btn("Load Layout from Clipboard", 154, Theme.NeutralBtn, ToolsPage, 40)
-
--- Progress Bar pinned at bottom of Body
-local ProgressBG = Instance.new("Frame")
-ProgressBG.Size = UDim2.new(1, -28, 0, 8)
-ProgressBG.Position = UDim2.new(0, 14, 1, -16)
-ProgressBG.BackgroundColor3 = Theme.SurfaceAlt
-ProgressBG.BorderSizePixel = 0
-ProgressBG.Parent = Body
-addCorner(ProgressBG, 4)
-
-local ProgressFill = Instance.new("Frame")
-ProgressFill.Size = UDim2.new(0, 0, 1, 0)
-ProgressFill.BackgroundColor3 = Theme.AccentGlow
-ProgressFill.BorderSizePixel = 0
-ProgressFill.Parent = ProgressBG
-addCorner(ProgressFill, 4)
-
--- Collapse toggle logic
-local isCollapsed = false
-CollapseBtn.MouseButton1Click:Connect(function()
-	isCollapsed = not isCollapsed
-	CollapseBtn.Text = isCollapsed and "+" or "—"
-	tween(Main, TweenInfo.new(0.22, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
-		Size = isCollapsed and UDim2.new(0, 372, 0, 52) or UDim2.new(0, 372, 0, 444),
-	})
-end)
-
--- Optional RightShift visibility toggle
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-	if gameProcessed then return end
-	if input.KeyCode == Enum.KeyCode.RightShift then
-		ScreenGui.Enabled = not ScreenGui.Enabled
+HouseIdBox.FocusLost:Connect(function()
+	local trimmed = HouseIdBox.Text:match("^%s*(.-)%s*$")
+	if trimmed and trimmed ~= "" then
+		SelectedHouseId = trimmed
+		AuthorLbl.Text = "ID: " .. SelectedHouseId
+	else
+		HouseIdBox.Text = SelectedHouseId
 	end
 end)
 
+local ScanBtn = Instance.new("TextButton")
+ScanBtn.Size = UDim2.new(0.68, -6, 0, 38)
+ScanBtn.Position = UDim2.new(0, 0, 1, -38)
+ScanBtn.BackgroundColor3 = C.Green
+ScanBtn.Text = "SCAN INTERIOR (DEEP RADIUS)"
+ScanBtn.TextColor3 = C.Text
+ScanBtn.TextSize = 12
+ScanBtn.Font = Enum.Font.GothamBold
+ScanBtn.AutoButtonColor = false
+ScanBtn.Parent = HousePage
+corner(ScanBtn, 9)
+
+local ClearGhostBtn = Instance.new("TextButton")
+ClearGhostBtn.Size = UDim2.new(0.32, 0, 0, 38)
+ClearGhostBtn.Position = UDim2.new(0.68, 0, 1, -38)
+ClearGhostBtn.BackgroundColor3 = C.Card
+ClearGhostBtn.Text = "CLEAR GHOST"
+ClearGhostBtn.TextColor3 = C.Text
+ClearGhostBtn.TextSize = 11
+ClearGhostBtn.Font = Enum.Font.GothamBold
+ClearGhostBtn.AutoButtonColor = false
+ClearGhostBtn.Parent = HousePage
+corner(ClearGhostBtn, 9)
+stroke(ClearGhostBtn, C.Border, 1, 0.35)
+
+-- ===================== SAVE TAB =====================
+local SaveBtn = Instance.new("TextButton")
+SaveBtn.Size = UDim2.new(1, 0, 0, 44)
+SaveBtn.Position = UDim2.new(0, 0, 0, 8)
+SaveBtn.BackgroundColor3 = C.Accent
+SaveBtn.Text = "Save Layout → Clipboard"
+SaveBtn.TextColor3 = C.Text
+SaveBtn.TextSize = 14
+SaveBtn.Font = Enum.Font.GothamBold
+SaveBtn.AutoButtonColor = false
+SaveBtn.Parent = SavePage
+corner(SaveBtn, 9)
+
+local LoadBtn = Instance.new("TextButton")
+LoadBtn.Size = UDim2.new(1, 0, 0, 44)
+LoadBtn.Position = UDim2.new(0, 0, 0, 62)
+LoadBtn.BackgroundColor3 = C.Card
+LoadBtn.Text = "Load Layout from Clipboard"
+LoadBtn.TextColor3 = C.Text
+LoadBtn.TextSize = 14
+LoadBtn.Font = Enum.Font.GothamBold
+LoadBtn.AutoButtonColor = false
+LoadBtn.Parent = SavePage
+corner(LoadBtn, 9)
+stroke(LoadBtn, C.Border, 1, 0.35)
+
+-- ===================== OTHERS TAB =====================
+local TPBtn = Instance.new("TextButton")
+TPBtn.Size = UDim2.new(1, 0, 0, 44)
+TPBtn.Position = UDim2.new(0, 0, 0, 8)
+TPBtn.BackgroundColor3 = C.Card
+TPBtn.Text = "TP to Player House"
+TPBtn.TextColor3 = C.Text
+TPBtn.TextSize = 14
+TPBtn.Font = Enum.Font.GothamBold
+TPBtn.AutoButtonColor = false
+TPBtn.Parent = OthersPage
+corner(TPBtn, 9)
+stroke(TPBtn, C.Border, 1, 0.35)
+
+-- ===================== BUILD COUNT MODAL =====================
+local ModalBackdrop = Instance.new("Frame")
+ModalBackdrop.Size = UDim2.new(1, 0, 1, 0)
+ModalBackdrop.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+ModalBackdrop.BackgroundTransparency = 0.55
+ModalBackdrop.Visible = false
+ModalBackdrop.ZIndex = 20
+ModalBackdrop.Parent = ScreenGui
+
+local ModalBox = Instance.new("Frame")
+ModalBox.Size = UDim2.new(0, 360, 0, 210)
+ModalBox.Position = UDim2.new(0.5, -180, 0.5, -105)
+ModalBox.BackgroundColor3 = C.Panel
+ModalBox.BorderSizePixel = 0
+ModalBox.ZIndex = 21
+ModalBox.Parent = ModalBackdrop
+corner(ModalBox, 12)
+stroke(ModalBox, C.Border, 1.2, 0.25)
+
+local ModalTitle = Instance.new("TextLabel")
+ModalTitle.Size = UDim2.new(1, -24, 0, 26)
+ModalTitle.Position = UDim2.new(0, 12, 0, 12)
+ModalTitle.BackgroundTransparency = 1
+ModalTitle.Text = "How many houses do you want to build?"
+ModalTitle.TextColor3 = C.Text
+ModalTitle.TextSize = 14
+ModalTitle.Font = Enum.Font.GothamBold
+ModalTitle.ZIndex = 22
+ModalTitle.Parent = ModalBox
+
+local selectedHouseCount = 1
+
+local CountNumLbl = Instance.new("TextLabel")
+CountNumLbl.Size = UDim2.new(1, 0, 0, 34)
+CountNumLbl.Position = UDim2.new(0, 0, 0, 46)
+CountNumLbl.BackgroundTransparency = 1
+CountNumLbl.Text = "1"
+CountNumLbl.TextColor3 = C.Text
+CountNumLbl.TextSize = 24
+CountNumLbl.Font = Enum.Font.GothamBold
+CountNumLbl.ZIndex = 22
+CountNumLbl.Parent = ModalBox
+
+local ModalCostLbl = Instance.new("TextLabel")
+ModalCostLbl.Size = UDim2.new(1, -24, 0, 22)
+ModalCostLbl.Position = UDim2.new(0, 12, 1, -78)
+ModalCostLbl.BackgroundTransparency = 1
+ModalCostLbl.Text = "Estimated cost: $0"
+ModalCostLbl.TextColor3 = C.Green
+ModalCostLbl.TextSize = 13
+ModalCostLbl.Font = Enum.Font.GothamBold
+ModalCostLbl.ZIndex = 22
+ModalCostLbl.Parent = ModalBox
+
+local function refreshModalCost()
+	CountNumLbl.Text = tostring(selectedHouseCount)
+	ModalCostLbl.Text = string.format("Estimated cost: $%s", tostring(estimatedCost * selectedHouseCount))
+end
+
+for idx = 1, 4 do
+	local cBtn = Instance.new("TextButton")
+	cBtn.Size = UDim2.new(0, 42, 0, 28)
+	cBtn.Position = UDim2.new(0.5, -96 + (idx - 1) * 50, 0, 86)
+	cBtn.BackgroundColor3 = C.Card
+	cBtn.Text = tostring(idx)
+	cBtn.TextColor3 = C.Text
+	cBtn.TextSize = 13
+	cBtn.Font = Enum.Font.GothamBold
+	cBtn.ZIndex = 22
+	cBtn.Parent = ModalBox
+	corner(cBtn, 6)
+	cBtn.MouseButton1Click:Connect(function()
+		selectedHouseCount = idx
+		refreshModalCost()
+	end)
+end
+
+local CancelModalBtn = Instance.new("TextButton")
+CancelModalBtn.Size = UDim2.new(0.5, -18, 0, 34)
+CancelModalBtn.Position = UDim2.new(0, 12, 1, -46)
+CancelModalBtn.BackgroundColor3 = C.Card
+CancelModalBtn.Text = "CANCEL"
+CancelModalBtn.TextColor3 = C.Text
+CancelModalBtn.TextSize = 12
+CancelModalBtn.Font = Enum.Font.GothamBold
+CancelModalBtn.ZIndex = 22
+CancelModalBtn.Parent = ModalBox
+corner(CancelModalBtn, 8)
+
+local ConfirmModalBtn = Instance.new("TextButton")
+ConfirmModalBtn.Size = UDim2.new(0.5, -18, 0, 34)
+ConfirmModalBtn.Position = UDim2.new(0.5, 6, 1, -46)
+ConfirmModalBtn.BackgroundColor3 = C.Accent
+ConfirmModalBtn.Text = "CONFIRM"
+ConfirmModalBtn.TextColor3 = C.Text
+ConfirmModalBtn.TextSize = 12
+ConfirmModalBtn.Font = Enum.Font.GothamBold
+ConfirmModalBtn.ZIndex = 22
+ConfirmModalBtn.Parent = ModalBox
+corner(ConfirmModalBtn, 8)
+
+-- ===================== LIVE PROGRESS CHECKLIST CARD =====================
+local ProgressCard = Instance.new("Frame")
+ProgressCard.Name = "BuildProgressCard"
+ProgressCard.Size = UDim2.new(0, 326, 0, 214)
+ProgressCard.Position = UDim2.new(0.5, -163, 0, 16)
+ProgressCard.BackgroundColor3 = C.Panel
+ProgressCard.BorderSizePixel = 0
+ProgressCard.Visible = false
+ProgressCard.ZIndex = 15
+ProgressCard.Parent = ScreenGui
+corner(ProgressCard, 12)
+stroke(ProgressCard, C.Border, 1.2, 0.25)
+
+local ProgHeader = Instance.new("TextLabel")
+ProgHeader.Size = UDim2.new(1, -135, 0, 22)
+ProgHeader.Position = UDim2.new(0, 12, 0, 8)
+ProgHeader.BackgroundTransparency = 1
+ProgHeader.Text = "House Build"
+ProgHeader.TextColor3 = C.Text
+ProgHeader.TextSize = 13
+ProgHeader.Font = Enum.Font.GothamBold
+ProgHeader.TextXAlignment = Enum.TextXAlignment.Left
+ProgHeader.TextTruncate = Enum.TextTruncate.AtEnd
+ProgHeader.ZIndex = 16
+ProgHeader.Parent = ProgressCard
+
+local SpeedBtn = Instance.new("TextButton")
+SpeedBtn.Name = "SpeedToggleBtn"
+SpeedBtn.Size = UDim2.new(0, 44, 0, 22)
+SpeedBtn.Position = UDim2.new(1, -124, 0, 8)
+SpeedBtn.BackgroundColor3 = C.Card
+SpeedBtn.Text = "1x"
+SpeedBtn.TextColor3 = C.AccentBright
+SpeedBtn.TextSize = 11
+SpeedBtn.Font = Enum.Font.GothamBold
+SpeedBtn.AutoButtonColor = false
+SpeedBtn.ZIndex = 16
+SpeedBtn.Parent = ProgressCard
+corner(SpeedBtn, 6)
+stroke(SpeedBtn, C.Border, 1, 0.35)
+
+local ProgSub = Instance.new("TextLabel")
+ProgSub.Size = UDim2.new(0, 72, 0, 22)
+ProgSub.Position = UDim2.new(1, -84, 0, 8)
+ProgSub.BackgroundTransparency = 1
+ProgSub.Text = "House 1/1"
+ProgSub.TextColor3 = C.Subtext
+ProgSub.TextSize = 11
+ProgSub.Font = Enum.Font.GothamBold
+ProgSub.TextXAlignment = Enum.TextXAlignment.Right
+ProgSub.ZIndex = 16
+ProgSub.Parent = ProgressCard
+
+local CheckListText = Instance.new("TextLabel")
+CheckListText.Size = UDim2.new(1, -24, 0, 82)
+CheckListText.Position = UDim2.new(0, 12, 0, 34)
+CheckListText.BackgroundTransparency = 1
+CheckListText.Text = "• Sell old furniture\n• Buy target house\n• Place scanned furniture"
+CheckListText.TextColor3 = C.Subtext
+CheckListText.TextSize = 11
+CheckListText.Font = Enum.Font.GothamMedium
+CheckListText.TextXAlignment = Enum.TextXAlignment.Left
+CheckListText.TextYAlignment = Enum.TextYAlignment.Top
+CheckListText.ZIndex = 16
+CheckListText.Parent = ProgressCard
+
+local StepCounterLbl = Instance.new("TextLabel")
+StepCounterLbl.Size = UDim2.new(1, -24, 0, 18)
+StepCounterLbl.Position = UDim2.new(0, 12, 0, 122)
+StepCounterLbl.BackgroundTransparency = 1
+StepCounterLbl.Text = "Processed: 0 / 0"
+StepCounterLbl.TextColor3 = C.Text
+StepCounterLbl.TextSize = 11
+StepCounterLbl.Font = Enum.Font.GothamBold
+StepCounterLbl.TextXAlignment = Enum.TextXAlignment.Left
+StepCounterLbl.ZIndex = 16
+StepCounterLbl.Parent = ProgressCard
+
+local BarBG = Instance.new("Frame")
+BarBG.Size = UDim2.new(1, -24, 0, 8)
+BarBG.Position = UDim2.new(0, 12, 0, 144)
+BarBG.BackgroundColor3 = C.Bg
+BarBG.BorderSizePixel = 0
+BarBG.ZIndex = 16
+BarBG.Parent = ProgressCard
+corner(BarBG, 4)
+
+local BarFill = Instance.new("Frame")
+BarFill.Size = UDim2.new(0, 0, 1, 0)
+BarFill.BackgroundColor3 = C.AccentBright
+BarFill.BorderSizePixel = 0
+BarFill.ZIndex = 17
+BarFill.Parent = BarBG
+corner(BarFill, 4)
+
+local ProgCostLbl = Instance.new("TextLabel")
+ProgCostLbl.Size = UDim2.new(0.42, -12, 0, 24)
+ProgCostLbl.Position = UDim2.new(0, 12, 1, -34)
+ProgCostLbl.BackgroundTransparency = 1
+ProgCostLbl.Text = "$0"
+ProgCostLbl.TextColor3 = C.Green
+ProgCostLbl.TextSize = 13
+ProgCostLbl.Font = Enum.Font.GothamBold
+ProgCostLbl.TextXAlignment = Enum.TextXAlignment.Left
+ProgCostLbl.ZIndex = 16
+ProgCostLbl.Parent = ProgressCard
+
+local RefundBtn = Instance.new("TextButton")
+RefundBtn.Name = "RefundBtn"
+RefundBtn.Size = UDim2.new(0, 68, 0, 24)
+RefundBtn.Position = UDim2.new(1, -138, 1, -34)
+RefundBtn.BackgroundColor3 = C.Card
+RefundBtn.Text = "REFUND"
+RefundBtn.TextColor3 = C.Amber
+RefundBtn.TextSize = 10
+RefundBtn.Font = Enum.Font.GothamBold
+RefundBtn.AutoButtonColor = false
+RefundBtn.ZIndex = 16
+RefundBtn.Parent = ProgressCard
+corner(RefundBtn, 6)
+stroke(RefundBtn, C.Border, 1, 0.35)
+
+local CloseProgBtn = Instance.new("TextButton")
+CloseProgBtn.Size = UDim2.new(0, 54, 0, 24)
+CloseProgBtn.Position = UDim2.new(1, -66, 1, -34)
+CloseProgBtn.BackgroundColor3 = C.Card
+CloseProgBtn.Text = "CLOSE"
+CloseProgBtn.TextColor3 = C.Text
+CloseProgBtn.TextSize = 10
+CloseProgBtn.Font = Enum.Font.GothamBold
+CloseProgBtn.AutoButtonColor = false
+CloseProgBtn.ZIndex = 16
+CloseProgBtn.Parent = ProgressCard
+corner(CloseProgBtn, 6)
+
+-- ===================== HELPERS =====================
+local Status = Instance.new("TextLabel")
+Status.Visible = false
+Status.Text = "Ready"
+Status.Parent = ScreenGui
+
+local InfoLabel = Instance.new("TextLabel")
+InfoLabel.Visible = false
+InfoLabel.Text = "Furniture: 0\nEst. Cost: 0 Bucks\nHouse Type: —"
+InfoLabel.Parent = ScreenGui
+
+local function setProgress(p)
+	tween(BarFill, 0.16, {
+		Size = UDim2.new(math.clamp(p, 0, 1), 0, 1, 0)
+	})
+end
+
 local function setStatus(t, c)
 	Status.Text = t
-	Status.TextColor3 = c or Theme.Muted
+	ThumbStatus.Text = t
+	ThumbStatus.TextColor3 = c or C.Subtext
+end
+
+local function computeCost()
+	local total = 0
+	for _, item in ipairs(ScannedLayout) do
+		local customPrice = item.name and FurniturePrices[item.name]
+		total += (customPrice or AVG_PRICE)
+	end
+	return math.floor(total)
 end
 
 local function updateInfo()
-	ValCount.Text = tostring(#ScannedLayout)
-	ValCost.Text = "~" .. tostring(estimatedCost)
-	ValHouse.Text = HouseName
+	estimatedCost = computeCost()
+	ThumbCount.Text = tostring(#ScannedLayout) .. " Parts"
+	HouseTitleLbl.Text = HouseName
+	AuthorLbl.Text = "ID: " .. SelectedHouseId
+	CostLbl.Text = "Est. Cost: $" .. tostring(estimatedCost)
+	ProgCostLbl.Text = "$" .. tostring(estimatedCost * math.max(1, selectedHouseCount))
 	InfoLabel.Text = string.format(
 		"Furniture: %d\nEst. Cost: ~%s Bucks\nHouse Type: %s",
 		#ScannedLayout,
@@ -459,14 +844,38 @@ local function updateInfo()
 	)
 end
 
-local function setProgress(p)
-	TweenService:Create(ProgressFill, TweenInfo.new(0.18), {
-		Size = UDim2.new(math.clamp(p, 0, 1), 0, 1, 0)
-	}):Play()
-end
+SpeedBtn.MouseButton1Click:Connect(function()
+	buildSpeedMultiplier = (buildSpeedMultiplier == 1) and 2 or 1
+	SpeedBtn.Text = tostring(buildSpeedMultiplier) .. "x"
+	SpeedBtn.TextColor3 = (buildSpeedMultiplier == 2) and C.Green or C.AccentBright
+end)
 
--- ===================== CORE SCAN (the real fix) =====================
+RefundBtn.MouseButton1Click:Connect(function()
+	if isBuilding then
+		cancelBuild = true
+	end
+	clearGhost()
+	setProgress(0)
+	StepCounterLbl.Text = "Processed: 0 / 0"
+	ProgCostLbl.Text = "$0"
+	CheckListText.Text = "• Build / preview refunded\n• Ghost preview cleared\n• Ready to scan or preview again"
+	setStatus("Refunded & cleared preview", C.Amber)
+end)
 
+CloseProgBtn.MouseButton1Click:Connect(function()
+	ProgressCard.Visible = false
+end)
+
+local isHidden = false
+HideBtn.MouseButton1Click:Connect(function()
+	isHidden = not isHidden
+	HideBtn.Text = isHidden and "+" or "—"
+	tween(Main, 0.2, {
+		Size = isHidden and UDim2.new(0, 540, 0, 42) or UDim2.new(0, 540, 0, 340)
+	})
+end)
+
+-- ===================== CORE SCAN =====================
 local function scanHouse()
 	if isScanning then return end
 	isScanning = true
@@ -474,12 +883,12 @@ local function scanHouse()
 	estimatedCost = 0
 	HouseName = "Unknown"
 	setProgress(0)
-	setStatus("Scanning radius around you…", Theme.AccentGlow)
+	setStatus("Scanning radius around you…", C.AccentBright)
 	updateInfo()
 
 	local char = LocalPlayer.Character
 	if not char or not char:FindFirstChild("HumanoidRootPart") then
-		setStatus("Character not found", Theme.DangerSoft)
+		setStatus("Character not found", C.Red)
 		isScanning = false
 		return
 	end
@@ -488,17 +897,14 @@ local function scanHouse()
 	local originPos = hrp.Position
 	HouseOrigin = CFrame.new(originPos)
 
-	-- Collect every BasePart / MeshPart in a wide radius
 	local parts = {}
 	local seen = {}
-	local SCAN_RADIUS = 85 -- large enough for full interiors
+	local SCAN_RADIUS = 85
 
-	-- 1. Everything under Workspace (most furniture lives here)
 	for _, obj in ipairs(workspace:GetDescendants()) do
 		if (obj:IsA("BasePart") or obj:IsA("MeshPart")) and not seen[obj] then
 			if (obj.Position - originPos).Magnitude <= SCAN_RADIUS then
 				if obj.Transparency < 0.97 and not obj:IsDescendantOf(char) then
-					-- skip pure anchors / tiny invisible parts
 					if obj.Size.Magnitude > 0.15 then
 						seen[obj] = true
 						table.insert(parts, obj)
@@ -508,7 +914,6 @@ local function scanHouse()
 		end
 	end
 
-	-- 2. Also check common folders that Adopt Me sometimes uses
 	local extraFolders = {"Furniture", "Decor", "Interior", "HouseFurniture", "PlacedItems"}
 	for _, folderName in ipairs(extraFolders) do
 		local folder = workspace:FindFirstChild(folderName) or workspace:FindFirstChild(folderName, true)
@@ -526,13 +931,12 @@ local function scanHouse()
 
 	local total = #parts
 	if total < 10 then
-		setStatus("Only " .. total .. " parts found. Move deeper inside the house and try again.", Theme.WarnSoft)
+		setStatus("Only " .. total .. " parts found. Move deeper inside.", C.Amber)
 		isScanning = false
 		updateInfo()
 		return
 	end
 
-	-- Try to guess house name from the largest nearby model
 	local bestModel, bestCount = nil, 0
 	for _, obj in ipairs(workspace:GetChildren()) do
 		if obj:IsA("Model") then
@@ -546,6 +950,7 @@ local function scanHouse()
 			end
 		end
 	end
+
 	if bestModel then
 		HouseName = bestModel.Name
 		if HouseName == "" or HouseName == "Model" then
@@ -555,40 +960,37 @@ local function scanHouse()
 		HouseName = "Custom / Streamed House"
 	end
 
-	setStatus(string.format("Found %d parts – processing…", total), Theme.AccentGlow)
+	setStatus(string.format("Found %d parts – processing…", total), C.AccentBright)
 
 	for i, part in ipairs(parts) do
 		local rel = HouseOrigin:ToObjectSpace(part.CFrame)
 		table.insert(ScannedLayout, {
-			rel          = {rel:GetComponents()},
-			size         = {part.Size.X, part.Size.Y, part.Size.Z},
-			color        = {part.Color.R, part.Color.G, part.Color.B},
-			material     = tostring(part.Material),
+			rel = {rel:GetComponents()},
+			size = {part.Size.X, part.Size.Y, part.Size.Z},
+			color = {part.Color.R, part.Color.G, part.Color.B},
+			material = tostring(part.Material),
 			transparency = part.Transparency,
-			name         = part.Name,
-			class        = part.ClassName,
-			anchored     = part.Anchored,
-			cancollide   = part.CanCollide
+			name = part.Name,
+			class = part.ClassName,
+			anchored = part.Anchored,
+			cancollide = part.CanCollide,
 		})
 
 		if i % 30 == 0 or i == total then
 			setProgress(i / total)
-			estimatedCost = math.floor(#ScannedLayout * AVG_PRICE)
-			setStatus(string.format("Scanning… %d / %d", i, total), Theme.AccentGlow)
+			setStatus(string.format("Scanning %d / %d", i, total), C.AccentBright)
 			updateInfo()
 			RunService.Heartbeat:Wait()
 		end
 	end
 
-	estimatedCost = math.floor(#ScannedLayout * AVG_PRICE)
 	setProgress(1)
-	setStatus(string.format("Finished – %d furniture pieces scanned", #ScannedLayout), Theme.Success)
 	updateInfo()
+	setStatus(string.format("Scanned %d parts", #ScannedLayout), C.Green)
 	isScanning = false
 end
 
--- ===================== GHOST / OTHER =====================
-
+-- ===================== GHOST & BUILD =====================
 local function clearGhost()
 	if GhostFolder then
 		GhostFolder:Destroy()
@@ -598,7 +1000,7 @@ end
 
 local function spawnGhost()
 	if #ScannedLayout == 0 then
-		setStatus("Scan first", Theme.DangerSoft)
+		setStatus("Scan first", C.Red)
 		return
 	end
 	clearGhost()
@@ -606,8 +1008,15 @@ local function spawnGhost()
 	GhostFolder.Name = "GhostPreview"
 	GhostFolder.Parent = workspace
 
-	setStatus("Building free ghost preview…", Theme.AccentGlow)
+	ProgressCard.Visible = true
+	ProgHeader.Text = HouseName
+	ProgSub.Text = "Ghost Preview"
+	ProgCostLbl.Text = "$0"
+	CheckListText.Text = "✓ Layout loaded\n• Spawning non-collidable preview parts\n• Zero Bucks spent"
+
+	setStatus("Building free ghost preview…", C.AccentBright)
 	local origin = HouseOrigin
+	local stepSize = 50 * buildSpeedMultiplier
 
 	for i, data in ipairs(ScannedLayout) do
 		local part = Instance.new("Part")
@@ -625,21 +1034,109 @@ local function spawnGhost()
 		part.CFrame = origin * CFrame.new(unpack(data.rel))
 		part.Parent = GhostFolder
 
-		if i % 50 == 0 then
+		if i % stepSize == 0 or i == #ScannedLayout then
 			setProgress(i / #ScannedLayout)
+			StepCounterLbl.Text = string.format("Processed: %d / %d", i, #ScannedLayout)
 			RunService.Heartbeat:Wait()
 		end
 	end
+
 	setProgress(1)
-	setStatus(string.format("Ghost ready (%d parts) – completely free", #ScannedLayout), Theme.AccentGlow)
+	CheckListText.Text = "✓ Layout loaded\n✓ Ghost preview spawned\n✓ Completely free"
+	setStatus(string.format("Ghost ready (%d parts)", #ScannedLayout), C.AccentBright)
+end
+
+local function runBuildSequence(count)
+	if #ScannedLayout == 0 then
+		setStatus("Scan first", C.Red)
+		return
+	end
+	if isBuilding then return end
+	isBuilding = true
+	cancelBuild = false
+
+	ProgressCard.Visible = true
+	ProgHeader.Text = HouseName
+	ProgCostLbl.Text = "$" .. tostring(estimatedCost * count)
+
+	local sellRemote = resolveRemote(RemotesConfig.SellFurniturePath)
+	local buyHouseRemote = resolveRemote(RemotesConfig.BuyHousePath)
+	local buyFurnRemote = resolveRemote(RemotesConfig.BuyFurnituresPath)
+
+	for h = 1, count do
+		if cancelBuild then break end
+		ProgSub.Text = string.format("House %d/%d", h, count)
+		setProgress(0)
+
+		if not RemotesConfig.Enabled then
+			CheckListText.Text = "• RemotesConfig.Enabled is false\n• Confirm inner {...} table schemas first\n• Running visual progress check"
+			local stepSize = 40 * buildSpeedMultiplier
+			for i = 1, #ScannedLayout do
+				if cancelBuild then break end
+				if i % stepSize == 0 or i == #ScannedLayout then
+					setProgress(i / #ScannedLayout)
+					StepCounterLbl.Text = string.format("Processed: %d / %d", i, #ScannedLayout)
+					RunService.Heartbeat:Wait()
+				end
+			end
+		else
+			-- 1. Sell existing furniture: (false, {...}, "sell")
+			CheckListText.Text = "• Selling existing furniture…\n• Buying house (" .. SelectedHouseId .. ")\n• Placing scanned furniture"
+			invokeHousingRemote(sellRemote, false, {}, "sell")
+			task.wait(0.25)
+
+			-- 2. Buy house with addons: (houseId, {...}, Color3)
+			CheckListText.Text = "✓ Old furniture sold\n• Buying house (" .. SelectedHouseId .. ")…\n• Placing scanned furniture"
+			invokeHousingRemote(buyHouseRemote, SelectedHouseId, {}, RemotesConfig.DefaultHouseColor)
+			task.wait(0.4)
+
+			-- 3. Buy/place furniture via BuyFurnitures({...})
+			CheckListText.Text = "✓ Old furniture sold\n✓ House bought (" .. SelectedHouseId .. ")\n• Placing scanned furniture…"
+			for i, item in ipairs(ScannedLayout) do
+				if cancelBuild then break end
+				local relCf = CFrame.new(unpack(item.rel))
+				local col = Color3.new(unpack(item.color))
+				local payload = {
+					{
+						kind = item.name,
+						cframe = HouseOrigin * relCf,
+						color = col,
+					},
+				}
+				invokeHousingRemote(buyFurnRemote, payload)
+
+				if i % math.max(1, buildSpeedMultiplier) == 0 or i == #ScannedLayout then
+					setProgress(i / #ScannedLayout)
+					StepCounterLbl.Text = string.format("Processed: %d / %d", i, #ScannedLayout)
+					task.wait(RemotesConfig.ItemDelay / buildSpeedMultiplier)
+				end
+			end
+		end
+	end
+
+	if cancelBuild then
+		CheckListText.Text = "! Build cancelled & refunded\n• No remaining items queued\n• Ready when you are"
+		setStatus("Build cancelled & refunded", C.Amber)
+	elseif not RemotesConfig.Enabled then
+		CheckListText.Text = "✓ Visual check done\n! Enable RemotesConfig.Enabled after verifying\n  the inner {...} table keys"
+		setStatus("Verify {...} table keys to fire live remotes", C.Amber)
+	else
+		CheckListText.Text = "✓ Sold old furniture\n✓ Bought house (" .. SelectedHouseId .. ")\n✓ Sent furniture placement calls"
+		setStatus("Build sequence completed", C.Green)
+	end
+
+	cancelBuild = false
+	isBuilding = false
 end
 
 local function realPlace()
 	if #ScannedLayout == 0 then
-		setStatus("Scan first", Theme.DangerSoft)
+		setStatus("Scan first", C.Red)
 		return
 	end
-	setStatus("Real place requires live remotes (they change).\nUse Ghost for free preview.", Theme.WarnSoft)
+	selectedHouseCount = 1
+	refreshModalCost()
+	ModalBackdrop.Visible = true
 end
 
 local function tpToPlayer()
@@ -648,14 +1145,14 @@ local function tpToPlayer()
 		if p ~= LocalPlayer then table.insert(list, p) end
 	end
 	if #list == 0 then
-		setStatus("No other players", Theme.DangerSoft)
+		setStatus("No other players", C.Red)
 		return
 	end
 	local target = list[math.random(#list)]
 	if target.Character and target.Character:FindFirstChild("HumanoidRootPart") then
 		LocalPlayer.Character.HumanoidRootPart.CFrame =
 			target.Character.HumanoidRootPart.CFrame + Vector3.new(0, 6, 0)
-		setStatus("Teleported near " .. target.Name, Theme.Purple)
+		setStatus("Teleported near " .. target.Name, C.AccentBright)
 	end
 end
 
@@ -663,13 +1160,14 @@ local function saveLayout()
 	if #ScannedLayout == 0 then return end
 	local data = {
 		house = HouseName,
+		houseId = SelectedHouseId,
 		count = #ScannedLayout,
-		cost  = estimatedCost,
+		cost = estimatedCost,
 		origin = {HouseOrigin:GetComponents()},
-		parts = ScannedLayout
+		parts = ScannedLayout,
 	}
 	setclipboard(HttpService:JSONEncode(data))
-	setStatus("Full layout copied to clipboard", Theme.Success)
+	setStatus("Full layout copied to clipboard", C.Green)
 end
 
 local function loadLayout()
@@ -679,14 +1177,18 @@ local function loadLayout()
 	if ok and data and data.parts then
 		ScannedLayout = data.parts
 		HouseName = data.house or "Loaded"
-		estimatedCost = data.cost or math.floor(#ScannedLayout * AVG_PRICE)
+		if data.houseId then
+			SelectedHouseId = data.houseId
+			HouseIdBox.Text = SelectedHouseId
+		end
+		estimatedCost = data.cost or computeCost()
 		if data.origin then
 			HouseOrigin = CFrame.new(unpack(data.origin))
 		end
-		setStatus(string.format("Loaded %d parts", #ScannedLayout), Theme.Success)
 		updateInfo()
+		setStatus(string.format("Loaded %d parts", #ScannedLayout), C.Green)
 	else
-		setStatus("Clipboard does not contain valid layout", Theme.DangerSoft)
+		setStatus("Clipboard does not contain valid layout", C.Red)
 	end
 end
 
@@ -698,9 +1200,16 @@ ClearGhostBtn.MouseButton1Click:Connect(function()
 	setStatus("Ghost cleared")
 end)
 PlaceBtn.MouseButton1Click:Connect(realPlace)
+CancelModalBtn.MouseButton1Click:Connect(function()
+	ModalBackdrop.Visible = false
+end)
+ConfirmModalBtn.MouseButton1Click:Connect(function()
+	ModalBackdrop.Visible = false
+	runBuildSequence(selectedHouseCount)
+end)
 TPBtn.MouseButton1Click:Connect(tpToPlayer)
 SaveBtn.MouseButton1Click:Connect(saveLayout)
 LoadBtn.MouseButton1Click:Connect(loadLayout)
 
 updateInfo()
-setStatus("Ready • Stand deep inside the house and press Scan")
+setStatus("Ready • Stand deep inside & Scan")
