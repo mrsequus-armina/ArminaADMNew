@@ -1,0 +1,422 @@
+-- Adopt Me House Interior Cloner + Ghost Preview + TP
+-- Executor: any (Synapse, Wave, Solara, etc.) | Target: Adopt Me 2026
+-- Features match the Cozy Bedroom bulk-build flow + requested extras
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local HttpService = game:GetService("HttpService")
+local UserInputService = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local LocalPlayer = Players.LocalPlayer
+local Mouse = LocalPlayer:GetMouse()
+
+-- ===================== STATE =====================
+local ScannedLayout = {}          -- {Name, CFrame, Size, Color, Material, Transparency, Attributes}
+local GhostFolder = nil
+local GhostActive = false
+local IsPlacing = false
+local SelectedPlayer = nil
+
+-- ===================== UI =====================
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "HouseClonerGhost"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.Parent = game:GetService("CoreGui")
+
+local Main = Instance.new("Frame")
+Main.Name = "Main"
+Main.Size = UDim2.new(0, 340, 0, 420)
+Main.Position = UDim2.new(0.5, -170, 0.5, -210)
+Main.BackgroundColor3 = Color3.fromRGB(22, 22, 28)
+Main.BorderSizePixel = 0
+Main.Active = true
+Main.Draggable = true
+Main.Parent = ScreenGui
+
+local UICorner = Instance.new("UICorner")
+UICorner.CornerRadius = UDim.new(0, 10)
+UICorner.Parent = Main
+
+local Title = Instance.new("TextLabel")
+Title.Size = UDim2.new(1, 0, 0, 36)
+Title.BackgroundColor3 = Color3.fromRGB(32, 32, 42)
+Title.Text = "House Cloner  ·  Ghost + TP"
+Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+Title.Font = Enum.Font.GothamBold
+Title.TextSize = 15
+Title.Parent = Main
+
+local TitleCorner = Instance.new("UICorner")
+TitleCorner.CornerRadius = UDim.new(0, 10)
+TitleCorner.Parent = Title
+
+local CloseBtn = Instance.new("TextButton")
+CloseBtn.Size = UDim2.new(0, 28, 0, 28)
+CloseBtn.Position = UDim2.new(1, -32, 0, 4)
+CloseBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
+CloseBtn.Text = "X"
+CloseBtn.TextColor3 = Color3.new(1,1,1)
+CloseBtn.Font = Enum.Font.GothamBold
+CloseBtn.TextSize = 14
+CloseBtn.Parent = Main
+Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(0, 6)
+
+CloseBtn.MouseButton1Click:Connect(function()
+    ScreenGui:Destroy()
+    if GhostFolder then GhostFolder:Destroy() end
+end)
+
+-- Status
+local Status = Instance.new("TextLabel")
+Status.Size = UDim2.new(1, -20, 0, 22)
+Status.Position = UDim2.new(0, 10, 0, 44)
+Status.BackgroundTransparency = 1
+Status.Text = "Ready · Scan a house first"
+Status.TextColor3 = Color3.fromRGB(180, 180, 200)
+Status.Font = Enum.Font.Gotham
+Status.TextSize = 12
+Status.TextXAlignment = Enum.TextXAlignment.Left
+Status.Parent = Main
+
+local function setStatus(t, color)
+    Status.Text = t
+    Status.TextColor3 = color or Color3.fromRGB(180, 180, 200)
+end
+
+-- Buttons helper
+local function makeBtn(text, y, color)
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(1, -20, 0, 32)
+    b.Position = UDim2.new(0, 10, 0, y)
+    b.BackgroundColor3 = color or Color3.fromRGB(45, 100, 200)
+    b.Text = text
+    b.TextColor3 = Color3.new(1,1,1)
+    b.Font = Enum.Font.GothamSemibold
+    b.TextSize = 13
+    b.Parent = Main
+    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
+    return b
+end
+
+local ScanBtn = makeBtn("1. Scan Current / Nearest House", 74, Color3.fromRGB(50, 130, 90))
+local GhostBtn = makeBtn("2. Ghost Preview (client only · free)", 112, Color3.fromRGB(90, 70, 160))
+local ClearGhostBtn = makeBtn("Clear Ghost Preview", 150, Color3.fromRGB(90, 60, 60))
+local RealPlaceBtn = makeBtn("3. Real Place (costs bucks · video flow)", 188, Color3.fromRGB(180, 90, 40))
+local TPLabel = Instance.new("TextLabel")
+TPLabel.Size = UDim2.new(1, -20, 0, 18)
+TPLabel.Position = UDim2.new(0, 10, 0, 230)
+TPLabel.BackgroundTransparency = 1
+TPLabel.Text = "Teleport to Player House"
+TPLabel.TextColor3 = Color3.fromRGB(200, 200, 220)
+TPLabel.Font = Enum.Font.Gotham
+TPLabel.TextSize = 12
+TPLabel.TextXAlignment = Enum.TextXAlignment.Left
+TPLabel.Parent = Main
+
+local PlayerBox = Instance.new("TextBox")
+PlayerBox.Size = UDim2.new(1, -20, 0, 28)
+PlayerBox.Position = UDim2.new(0, 10, 0, 250)
+PlayerBox.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
+PlayerBox.Text = ""
+PlayerBox.PlaceholderText = "Type exact player name..."
+PlayerBox.TextColor3 = Color3.new(1,1,1)
+PlayerBox.Font = Enum.Font.Gotham
+PlayerBox.TextSize = 13
+PlayerBox.ClearTextOnFocus = false
+PlayerBox.Parent = Main
+Instance.new("UICorner", PlayerBox).CornerRadius = UDim.new(0, 6)
+
+local TPBtn = makeBtn("TP to that Player's House", 286, Color3.fromRGB(40, 110, 160))
+local SaveBtn = makeBtn("Save Scanned Layout (JSON)", 324, Color3.fromRGB(60, 60, 80))
+local LoadBtn = makeBtn("Load Layout from Clipboard", 362, Color3.fromRGB(60, 60, 80))
+
+-- Progress bar
+local ProgressBG = Instance.new("Frame")
+ProgressBG.Size = UDim2.new(1, -20, 0, 8)
+ProgressBG.Position = UDim2.new(0, 10, 1, -18)
+ProgressBG.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+ProgressBG.Parent = Main
+Instance.new("UICorner", ProgressBG).CornerRadius = UDim.new(0, 4)
+
+local Progress = Instance.new("Frame")
+Progress.Size = UDim2.new(0, 0, 1, 0)
+Progress.BackgroundColor3 = Color3.fromRGB(80, 180, 120)
+Progress.Parent = ProgressBG
+Instance.new("UICorner", Progress).CornerRadius = UDim.new(0, 4)
+
+local function setProgress(p)
+    Progress:TweenSize(UDim2.new(math.clamp(p, 0, 1), 0, 1, 0), "Out", "Quad", 0.15, true)
+end
+
+-- ===================== CORE LOGIC =====================
+
+local function getHouseRoot(player)
+    -- Common paths used by current house systems
+    local char = player.Character
+    if not char then return nil end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return nil end
+
+    -- Prefer houses near the player
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj:IsA("Model") and (obj.Name:find("House") or obj.Name:find("Home") or obj:GetAttribute("Owner") == player.Name) then
+            local primary = obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")
+            if primary and (primary.Position - hrp.Position).Magnitude < 80 then
+                return obj
+            end
+        end
+    end
+    return nil
+end
+
+local function scanHouse(targetPlayer)
+    ScannedLayout = {}
+    local root = getHouseRoot(targetPlayer or LocalPlayer)
+    if not root then
+        -- fallback: scan everything near local player
+        local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+        if not hrp then
+            setStatus("No character / no house found", Color3.fromRGB(255, 100, 100))
+            return 0
+        end
+        root = workspace
+    end
+
+    local count = 0
+    local origin = root:IsA("Model") and (root.PrimaryPart and root.PrimaryPart.Position or root:GetPivot().Position) or Vector3.zero
+
+    for _, part in ipairs(root:GetDescendants()) do
+        if part:IsA("BasePart") and not part:IsA("Terrain") then
+            -- skip character parts & very large map pieces
+            if part.Size.Magnitude < 120 and part.Transparency < 0.95 then
+                local relCF = CFrame.new(origin):ToObjectSpace(part.CFrame)
+                table.insert(ScannedLayout, {
+                    Name = part.Name,
+                    Class = part.ClassName,
+                    RelCFrame = {relCF:GetComponents()},
+                    Size = {part.Size.X, part.Size.Y, part.Size.Z},
+                    Color = {part.Color.R, part.Color.G, part.Color.B},
+                    Material = part.Material.Name,
+                    Transparency = part.Transparency,
+                    CanCollide = part.CanCollide,
+                    Anchored = part.Anchored,
+                })
+                count += 1
+            end
+        end
+    end
+
+    setStatus(string.format("Scanned %d parts", count), Color3.fromRGB(100, 220, 140))
+    setProgress(1)
+    task.delay(0.4, function() setProgress(0) end)
+    return count
+end
+
+local function clearGhost()
+    if GhostFolder then
+        GhostFolder:Destroy()
+        GhostFolder = nil
+    end
+    GhostActive = false
+    setStatus("Ghost cleared", Color3.fromRGB(180, 180, 200))
+end
+
+local function spawnGhost()
+    if #ScannedLayout == 0 then
+        setStatus("Scan first", Color3.fromRGB(255, 140, 80))
+        return
+    end
+    clearGhost()
+
+    GhostFolder = Instance.new("Folder")
+    GhostFolder.Name = "GhostHousePreview"
+    GhostFolder.Parent = workspace
+
+    local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    local base = hrp and hrp.CFrame or CFrame.new(0, 10, 0)
+
+    local total = #ScannedLayout
+    for i, data in ipairs(ScannedLayout) do
+        local p = Instance.new("Part")
+        p.Name = "Ghost_" .. data.Name
+        p.Size = Vector3.new(unpack(data.Size))
+        p.Color = Color3.new(unpack(data.Color))
+        p.Material = Enum.Material[data.Material] or Enum.Material.Plastic
+        p.Transparency = math.max(data.Transparency, 0.35)   -- always slightly see-through
+        p.CanCollide = false
+        p.Anchored = true
+        p.CastShadow = false
+
+        local rel = CFrame.new(unpack(data.RelCFrame))
+        p.CFrame = base * rel
+        p.Parent = GhostFolder
+
+        if i % 40 == 0 then
+            setProgress(i / total)
+            setStatus(string.format("Ghost placing %d / %d", i, total))
+            task.wait()
+        end
+    end
+
+    GhostActive = true
+    setProgress(1)
+    setStatus(string.format("Ghost ready · %d parts (free · client only)", total), Color3.fromRGB(160, 130, 255))
+    task.delay(0.6, function() setProgress(0) end)
+end
+
+-- Real place attempt (matches video flow: buy → clear default → textures → furniture)
+-- Exact remote names rotate; this uses the common patterns + a safe fallback message
+local function realPlace()
+    if #ScannedLayout == 0 then
+        setStatus("Scan first", Color3.fromRGB(255, 140, 80))
+        return
+    end
+    if IsPlacing then return end
+    IsPlacing = true
+
+    setStatus("Starting real place (costs bucks)...", Color3.fromRGB(255, 180, 80))
+    setProgress(0.1)
+
+    -- Attempt 1: look for known house-build remotes
+    local function tryFire(path)
+        local ok, remote = pcall(function()
+            local cur = game
+            for part in string.gmatch(path, "[^%.]+") do
+                cur = cur:FindFirstChild(part) or cur:WaitForChild(part, 1)
+            end
+            return cur
+        end)
+        if ok and remote and (remote:IsA("RemoteEvent") or remote:IsA("RemoteFunction")) then
+            pcall(function()
+                if remote:IsA("RemoteEvent") then
+                    remote:FireServer(ScannedLayout)
+                else
+                    remote:InvokeServer(ScannedLayout)
+                end
+            end)
+            return true
+        end
+        return false
+    end
+
+    -- Common paths used by public cloners (update if patched)
+    local candidates = {
+        "ReplicatedStorage.API.HouseAPI.PlaceFurniture",
+        "ReplicatedStorage.Remotes.House.PlaceItems",
+        "ReplicatedStorage.Network.HouseBuild",
+        "ReplicatedStorage.ClientModules.Core.Interiors.Place",
+    }
+
+    local fired = false
+    for _, path in ipairs(candidates) do
+        if tryFire(path) then
+            fired = true
+            break
+        end
+    end
+
+    -- Visual progress matching the video UI
+    local steps = {"Buy house", "Clear default furniture", "Apply textures", "Place furniture", "Ambience"}
+    for i, step in ipairs(steps) do
+        setStatus(step .. "...")
+        setProgress(i / #steps)
+        task.wait(0.45)
+    end
+
+    if fired then
+        setStatus("Place request sent · check inventory / house", Color3.fromRGB(100, 220, 140))
+    else
+        setStatus("Remotes not found this build · use Ghost + manual or update paths", Color3.fromRGB(255, 160, 80))
+    end
+
+    IsPlacing = false
+    task.delay(1, function() setProgress(0) end)
+end
+
+local function tpToPlayer(name)
+    local target = Players:FindFirstChild(name)
+    if not target then
+        setStatus("Player not found", Color3.fromRGB(255, 100, 100))
+        return
+    end
+
+    local house = getHouseRoot(target)
+    local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+
+    if house then
+        local primary = house.PrimaryPart or house:FindFirstChildWhichIsA("BasePart")
+        if primary then
+            hrp.CFrame = primary.CFrame + Vector3.new(0, 5, 0)
+            setStatus("TP'd to " .. name .. "'s house", Color3.fromRGB(100, 200, 255))
+            return
+        end
+    end
+
+    -- fallback: TP near the player
+    if target.Character and target.Character:FindFirstChild("HumanoidRootPart") then
+        hrp.CFrame = target.Character.HumanoidRootPart.CFrame * CFrame.new(0, 0, 6)
+        setStatus("TP'd near " .. name .. " (house model not located)", Color3.fromRGB(200, 180, 100))
+    end
+end
+
+-- ===================== WIRING =====================
+ScanBtn.MouseButton1Click:Connect(function()
+    scanHouse(LocalPlayer)
+end)
+
+GhostBtn.MouseButton1Click:Connect(spawnGhost)
+ClearGhostBtn.MouseButton1Click:Connect(clearGhost)
+RealPlaceBtn.MouseButton1Click:Connect(realPlace)
+
+TPBtn.MouseButton1Click:Connect(function()
+    local name = PlayerBox.Text:gsub("^%s+", ""):gsub("%s+$", "")
+    if name == "" then
+        setStatus("Enter a player name", Color3.fromRGB(255, 140, 80))
+        return
+    end
+    tpToPlayer(name)
+end)
+
+SaveBtn.MouseButton1Click:Connect(function()
+    if #ScannedLayout == 0 then
+        setStatus("Nothing scanned", Color3.fromRGB(255, 140, 80))
+        return
+    end
+    local json = HttpService:JSONEncode(ScannedLayout)
+    if setclipboard then
+        setclipboard(json)
+        setStatus("Layout copied to clipboard (" .. #ScannedLayout .. " parts)", Color3.fromRGB(100, 220, 140))
+    else
+        setStatus("Clipboard not available on this executor", Color3.fromRGB(255, 140, 80))
+    end
+end)
+
+LoadBtn.MouseButton1Click:Connect(function()
+    setStatus("Paste JSON into a TextBox or use executor clipboard tools", Color3.fromRGB(180, 180, 200))
+    -- Most executors support getclipboard; if present:
+    if getclipboard then
+        local ok, data = pcall(function()
+            return HttpService:JSONDecode(getclipboard())
+        end)
+        if ok and type(data) == "table" then
+            ScannedLayout = data
+            setStatus("Loaded " .. #ScannedLayout .. " parts from clipboard", Color3.fromRGB(100, 220, 140))
+        else
+            setStatus("Invalid JSON on clipboard", Color3.fromRGB(255, 100, 100))
+        end
+    end
+end)
+
+-- Auto-cleanup on leave
+Players.PlayerRemoving:Connect(function(p)
+    if p == LocalPlayer and GhostFolder then
+        GhostFolder:Destroy()
+    end
+end)
+
+setStatus("Ready · Scan → Ghost (free) or Real Place", Color3.fromRGB(160, 220, 160))
+print("[HouseCloner] loaded · Ghost preview is pure client-side, zero bucks")
